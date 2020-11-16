@@ -27,3 +27,4 @@ for line in args.infile.read().split('\n'):
 
     if len(output.strip()) > 0 and ',' in output:
       print(output.strip())
+      sys.stdout.flush()
