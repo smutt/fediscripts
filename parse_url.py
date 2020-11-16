@@ -25,5 +25,5 @@ for line in args.infile.read().split('\n'):
       except ValueError:
         continue
 
-  if len(output.strip()) > 0 and ',' in output:
-    print(output.strip())
+    if len(output.strip()) > 0 and ',' in output:
+      print(output.strip())
