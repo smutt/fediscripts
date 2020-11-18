@@ -10,11 +10,11 @@ class FediServer():
   def __init__(self, domain, first_seen, last_seen=None):
     self.domain = domain
     self.hits = 1
-    self.first_seen = first_seen
+    self.first_seen = int(first_seen)
     if last_seen:
-      self.last_seen = last_seen
+      self.last_seen = int(last_seen)
     else:
-      self.last_seen = first_seen
+      self.last_seen = int(first_seen)
 
   def __repr__(self):
     return "dn: " + self.domain + " hits:" + str(self.hits) + " fs:" + str(self.first_seen) + " ls:" + str(self.last_seen)
@@ -24,17 +24,17 @@ class FediServer():
 
   def push_hit(self, ts):
     self.hits += 1
-    if self.first_seen > ts:
-      self.first_seen = ts
-    if self.last_seen < ts:
-      self.last_seen = ts
+    if self.first_seen > int(ts):
+      self.first_seen = int(ts)
+    if self.last_seen < int(ts):
+      self.last_seen = int(ts)
 
   def combine(self, hits, first_seen, last_seen):
     self.hits += hits
-    if self.first_seen > first_seen:
-      self.first_seen = first_seen
-    if self.last_seen < last_seen:
-      self.last_seen = last_seen
+    if self.first_seen > int(first_seen):
+      self.first_seen = int(first_seen)
+    if self.last_seen < int(last_seen):
+      self.last_seen = int(last_seen)
 
 
 # BEGIN EXECUTION
@@ -42,9 +42,14 @@ ap = argparse.ArgumentParser(description='Parse domain names from input')
 ap.add_argument(nargs='?', metavar='file', dest='infile', type=argparse.FileType('r'),
                   default=sys.stdin, help='Input file if not using stdin')
 ap.add_argument('-d', '--delimiter', type=str, default=',', dest='delimiter', help='Input delimiter')
-ap.add_argument('-t', '--top', dest='top', type=int, help='Output sorted top talking domains only')
-ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
+ap_group = ap.add_mutually_exclusive_group()
+ap_group.add_argument('-t', '--top', dest='top', type=int, help='Output sorted top talking domains only')
+ap_group.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
 args = ap.parse_args()
+
+if sys.stdin.isatty() and args.infile == sys.stdin:
+  print("No input")
+  exit(1)
 
 fedi_servers = {}
 for line in args.infile.read().split('\n'):
@@ -83,18 +88,19 @@ if args.outfile:
 
   for key,server in fedi_servers.items():
     if key in file_servers:
-      file_servers[key].combine(server.hits, server.first_seen, server.last_seen)
+      file_servers[key].combine(int(server.hits), int(server.first_seen), int(server.last_seen))
     else:
-      print("key not found")
       file_servers[key] = FediServer(key, server.first_seen, server.last_seen)
       file_servers[key].hits = server.hits
   fh.close()
 
-  print(repr(file_servers))
+  # Alphabetize and write to file
+  servers = [v for k,v in file_servers.items()]
+  servers.sort(key=lambda x: x.domain, reverse=False)
   fh = open(args.outfile, 'w')
   fh.write("#domain,first_seen,last_seen,hits\n")
-  for key,server in file_servers.items():
-    fh.write(key + "," + str(server.first_seen) + "," + str(server.last_seen) + "," + str(server.hits) + "\n")
+  for server in servers:
+    fh.write(server.domain + "," + str(server.first_seen) + "," + str(server.last_seen) + "," + str(server.hits) + "\n")
   fh.close()
 
 else:
