@@ -36,46 +36,38 @@ class FediServer():
     if self.last_seen < int(last_seen):
       self.last_seen = int(last_seen)
 
+# Parse input file and return dict of FediServers
+# Takes a file handle
+def parse_input(fh):
+  rv = {}
+  for line in fh.read().split('\n'):
+    if len(line) > 0:
+      toks = line.split(args.delimiter)
 
-# BEGIN EXECUTION
-ap = argparse.ArgumentParser(description='Parse domain names from input')
-ap.add_argument(nargs='?', metavar='file', dest='infile', type=argparse.FileType('r'),
-                  default=sys.stdin, help='Input file if not using stdin')
-ap.add_argument('-d', '--delimiter', type=str, default=',', dest='delimiter', help='Input delimiter')
-ap_group = ap.add_mutually_exclusive_group()
-ap_group.add_argument('-t', '--top', dest='top', type=int, help='Output sorted top talking domains only')
-ap_group.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
-args = ap.parse_args()
-
-if sys.stdin.isatty() and args.infile == sys.stdin:
-  print("No input")
-  exit(1)
-
-fedi_servers = {}
-for line in args.infile.read().split('\n'):
-  if len(line) > 0:
-    toks = line.split(args.delimiter)
-
-    try:
-      ts = int(toks[0])
-    except: # invalid timestamp
-      continue
-
-    for tok in toks[1:]:
       try:
-        url = urllib.parse.urlparse(tok)
-      except ValueError:
+        ts = int(toks[0].strip())
+      except: # invalid timestamp
         continue
 
-      if url.hostname:
-        if url.hostname in fedi_servers:
-          fedi_servers[url.hostname].push_hit(ts)
-        else:
-          fedi_servers[url.hostname] = FediServer(url.hostname, ts)
+      for tok in toks[1:]:
+        try:
+          url = urllib.parse.urlparse(tok)
+        except ValueError:
+          continue
 
-if args.outfile:
-  file_servers = {}
-  fh = open(args.outfile, 'r')
+        if url.hostname:
+          if url.hostname.strip() in rv:
+            rv[url.hostname.strip()].push_hit(ts)
+          else:
+            rv[url.hostname.strip()] = FediServer(url.hostname.strip(), ts)
+
+  return rv
+
+# Parse consolidated file and return dict of FediServers
+# Takes a file handle
+# TODO: Get nicer about a non-existent file
+def parse_consolidated(fh):
+  rv = {}
   for line in fh.read().split('\n'):
     if len(line) == 0:
       continue
@@ -83,33 +75,81 @@ if args.outfile:
       continue
 
     toks = line.split(',')
-    file_servers[toks[0]] = FediServer(toks[0], toks[1], toks[2])
-    file_servers[toks[0]].hits = int(toks[3])
+    rv[toks[0].strip()] = FediServer(toks[0].strip(), toks[1].strip(), toks[2].strip())
+    rv[toks[0].strip()].hits = int(toks[3].strip())
 
-  for key,server in fedi_servers.items():
-    if key in file_servers:
-      file_servers[key].combine(int(server.hits), int(server.first_seen), int(server.last_seen))
-    else:
-      file_servers[key] = FediServer(key, server.first_seen, server.last_seen)
-      file_servers[key].hits = server.hits
-  fh.close()
+  return rv
 
-  # Alphabetize and write to file
-  servers = [v for k,v in file_servers.items()]
+# Writes consolidated file
+# Takes a file handle to write to, and a dict of FediServers
+def write_consolidated(fh, servers_dict):
+  servers = [v for k,v in servers_dict.items()]
   servers.sort(key=lambda x: x.domain, reverse=False)
-  fh = open(args.outfile, 'w')
   fh.write("#domain,first_seen,last_seen,hits\n")
   for server in servers:
     fh.write(server.domain + "," + str(server.first_seen) + "," + str(server.last_seen) + "," + str(server.hits) + "\n")
-  fh.close()
 
-else:
-  if args.top:
-    servers = [v for k,v in fedi_servers.items()]
-    servers.sort(key=lambda x: x.hits, reverse=True)
-    for ii in range(args.top):
-      if ii < len(servers):
-        print(servers[ii])
+# BEGIN EXECUTION
+ap = argparse.ArgumentParser(description='Process skarfed output')
+ap.add_argument('-i', '--input-file', nargs='+', dest='infile', type=argparse.FileType('r'), help='Input file(s). If more than 1 produce a diff between them')
+ap.add_argument('-d', '--delimiter', type=str, default=',', dest='delimiter', help='Input delimiter')
+ap_group = ap.add_mutually_exclusive_group()
+ap_group.add_argument('-t', '--top', dest='top', type=int, help='Output sorted top talking domains only')
+ap_group.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
+args = ap.parse_args()
+
+if not args.infile:
+  print("No input")
+  exit(1)
+
+if len(args.infile) > 2:
+  print("Max 2 input files")
+  exit(1)
+
+if len(args.infile) == 1:
+  fedi_servers = parse_input(args.infile[0])
+
+  if args.outfile:
+    consolidated_fh = open(args.outfile, 'r')
+    file_servers = parse_consolidated(consolidated_fh)
+    consolidated_fh.close()
+
+    for key,server in fedi_servers.items():
+      if key in file_servers:
+        file_servers[key].combine(int(server.hits), int(server.first_seen), int(server.last_seen))
+      else:
+        file_servers[key] = FediServer(key, server.first_seen, server.last_seen)
+        file_servers[key].hits = server.hits
+
+    consolidated_fh = open(args.outfile, 'w')
+    write_consolidated(consolidated_fh, file_servers)
+    consolidated_fh.close()
+
   else:
-    for key, server in fedi_servers.items():
-      print(server)
+    if args.top:
+      servers = [v for k,v in fedi_servers.items()]
+      servers.sort(key=lambda x: x.hits, reverse=True)
+      for ii in range(args.top):
+        if ii < len(servers):
+          print(servers[ii])
+    else:
+      for key, server in fedi_servers.items():
+        print(server)
+
+elif len(args.infile) == 2: # Print diff of domains between both input files
+  domains_1 = [v.domain for k,v in parse_input(args.infile[0]).items()]
+  domains_2 = [v.domain for k,v in parse_input(args.infile[1]).items()]
+  domains_1.sort()
+  domains_2.sort()
+
+  pos_1 = pos_2 = 0
+  for ii in range(max(len(domains_1), len(domains_2))):
+    if domains_1[pos_1] == domains_2[pos_2]:
+      pos_1 += 1
+      pos_2 += 1
+    elif domains_1[pos_1] > domains_2[pos_2]:
+      print("< " + domains_2[pos_2])
+      pos_2 += 1
+    elif domains_1[pos_1] < domains_2[pos_2]:
+      print("> " + domains_1[pos_1])
+      pos_1 += 1
