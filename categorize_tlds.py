@@ -18,7 +18,7 @@ class IANAParser(HTMLParser):
 
   def handle_data(self, data):
     if len(self.last_tld) > 0:
-      if data in ['country-code', 'generic', 'sponsored', 'test']:
+      if data in ['country-code', 'generic', 'generic-restricted', 'sponsored', 'test']:
         self.tlds[self.last_tld] = data
         self.last_tld = ''
 
