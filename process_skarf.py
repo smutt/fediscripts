@@ -3,6 +3,7 @@
 #  Copyright (C) 2020, Andrew McConachie, <andrew@depht.com>
 
 import sys
+import os
 import argparse
 import urllib.parse
 
@@ -37,9 +38,19 @@ class FediServer():
       self.last_seen = int(last_seen)
 
 # Parse input file and return dict of FediServers
-# Takes a file handle
-def parse_input(fh):
+# Takes a path to read
+def parse_input(path):
   rv = {}
+
+  if not os.path.exists(path):
+    print("Error: Input file does not exist:" + path)
+    exit(1)
+
+  if not os.access(path, os.R_OK):
+    print("Error: Input file not readable:" + path)
+    exit(1)
+
+  fh = open(path, 'r')
   for line in fh.read().split('\n'):
     if len(line) > 0:
       toks = line.split(args.delimiter)
@@ -64,10 +75,17 @@ def parse_input(fh):
   return rv
 
 # Parse consolidated file and return dict of FediServers
-# Takes a file handle
-# TODO: Get nicer about a non-existent file
-def parse_consolidated(fh):
+# Takes a path to the consolidated file
+def parse_consolidated(path):
   rv = {}
+
+  if not os.path.exists(path):
+    return rv
+
+  if not os.access(path, os.R_OK):
+    return rv
+
+  fh = open(path, 'r')
   for line in fh.read().split('\n'):
     if len(line) == 0:
       continue
@@ -78,11 +96,27 @@ def parse_consolidated(fh):
     rv[toks[0].strip()] = FediServer(toks[0].strip(), toks[1].strip(), toks[2].strip())
     rv[toks[0].strip()].hits = int(toks[3].strip())
 
+  fh.close()
   return rv
 
 # Writes consolidated file
-# Takes a file handle to write to, and a dict of FediServers
-def write_consolidated(fh, servers_dict):
+# Takes a path to write to, and a dict of FediServers
+def write_consolidated(path, servers_dict):
+  if os.path.exists(path):
+    if not os.access(path, os.W_OK):
+      print("Error: Output file not writable:" + path)
+      exit(1)
+  else:
+    if len(os.path.dirname(path)) == 0:
+      if not os.access('./', os.W_OK):
+        print("Error: Working directory not writable")
+        exit(1)
+    else:
+      if not os.access(os.path.dirname(path), os.W_OK):
+        print("Error: Directory not writable:", os.path.dirname(path))
+        exit(1)
+
+  fh = open(path, 'w')
   servers = [v for k,v in servers_dict.items()]
   servers.sort(key=lambda x: x.domain, reverse=False)
   fh.write("#domain,first_seen,last_seen,hits\n")
@@ -91,7 +125,7 @@ def write_consolidated(fh, servers_dict):
 
 # BEGIN EXECUTION
 ap = argparse.ArgumentParser(description='Process skarfed output')
-ap.add_argument('-i', '--input-file', nargs='+', dest='infile', type=argparse.FileType('r'), help='Input file(s). If more than 1 produce a diff between them')
+ap.add_argument('-i', '--input-file', nargs='+', dest='infile', type=str, help='Input file(s). If more than 1 produce a diff between them')
 ap.add_argument('-d', '--delimiter', type=str, default=',', dest='delimiter', help='Input delimiter')
 ap_group = ap.add_mutually_exclusive_group()
 ap_group.add_argument('-t', '--top', dest='top', type=int, help='Output sorted top talking domains only')
@@ -110,9 +144,7 @@ if len(args.infile) == 1:
   fedi_servers = parse_input(args.infile[0])
 
   if args.outfile:
-    consolidated_fh = open(args.outfile, 'r')
-    file_servers = parse_consolidated(consolidated_fh)
-    consolidated_fh.close()
+    file_servers = parse_consolidated(args.outfile)
 
     for key,server in fedi_servers.items():
       if key in file_servers:
@@ -121,9 +153,7 @@ if len(args.infile) == 1:
         file_servers[key] = FediServer(key, server.first_seen, server.last_seen)
         file_servers[key].hits = server.hits
 
-    consolidated_fh = open(args.outfile, 'w')
-    write_consolidated(consolidated_fh, file_servers)
-    consolidated_fh.close()
+    write_consolidated(args.outfile, file_servers)
 
   else:
     if args.top:
