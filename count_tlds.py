@@ -18,10 +18,10 @@ class TLDCount():
     return self.__repr__()
 
 
-
 # BEGIN EXECUTION
 ap = argparse.ArgumentParser(description='Count TLDs used from a consolidated file')
 ap.add_argument(dest='infile', type=str, help='Input file')
+ap.add_argument('-c', '--categorize', dest='cat', nargs=1, help='Categorize by supplied CSV file')
 args = ap.parse_args()
 
 if not args.infile:
@@ -51,8 +51,31 @@ for line in fh.read().split('\n'):
   else:
     tlds[tld] = 1
 
-output = [TLDCount(k, v) for k,v in tlds.items()]
-output.sort(key=lambda x: x.count, reverse=True)
+if args.cat:
+  categories = {}
+  fh = open(args.cat[0], 'r')
+  for line in fh.read().split('\n'):
+    if len(line) == 0:
+      continue
+    if line[0] == '#':
+      continue
 
-for tt in output:
-  print(repr(tt))
+    toks = line.split(',')
+    categories[toks[0]] = toks[1]
+  fh.close()
+
+  output = {}
+  for tld,count in tlds.items():
+   if categories[tld] in output:
+     output[categories[tld]] += 1
+   else:
+     output[categories[tld]] = 1
+
+  for category,count in output.items():
+    print(category + ":" + str(count))
+
+else:
+  output = [TLDCount(k, v) for k,v in tlds.items()]
+  output.sort(key=lambda x: x.count, reverse=True)
+  for tt in output:
+    print(repr(tt))
