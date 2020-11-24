@@ -22,11 +22,8 @@ class TLDCount():
 ap = argparse.ArgumentParser(description='Count TLDs used from a consolidated file')
 ap.add_argument(dest='infile', type=str, help='Input file')
 ap.add_argument('-c', '--categorize', dest='cat', nargs=1, help='Categorize by supplied CSV file')
+ap.add_argument('-x', '--exclude', dest='exclude', nargs='+', help='If categorizing, exclude these TLDs from categorization')
 args = ap.parse_args()
-
-if not args.infile:
-  print("No input")
-  exit(1)
 
 if not os.path.exists(args.infile):
   print("Error: Input file does not exist:" + args.infile)
@@ -34,6 +31,10 @@ if not os.path.exists(args.infile):
 
 if not os.access(args.infile, os.R_OK):
   print("Error: Input file not readable:" + args.infile)
+  exit(1)
+
+if args.cat and not args.exclude:
+  print("--exclude requires --categorize be present")
   exit(1)
 
 tlds = {}
@@ -64,12 +65,16 @@ if args.cat:
     categories[toks[0]] = toks[1]
   fh.close()
 
+  if args.exclude:
+    for tld in args.exclude:
+      categories[tld] = tld
+
   output = {}
   for tld,count in tlds.items():
-   if categories[tld] in output:
-     output[categories[tld]] += 1
-   else:
-     output[categories[tld]] = 1
+    if categories[tld] in output:
+      output[categories[tld]] += count
+    else:
+      output[categories[tld]] = count
 
   for category,count in output.items():
     print(category + ":" + str(count))
