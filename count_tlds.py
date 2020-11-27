@@ -33,7 +33,7 @@ if not os.access(args.infile, os.R_OK):
   print("Error: Input file not readable:" + args.infile)
   exit(1)
 
-if args.cat and not args.exclude:
+if args.exclude and not args.cat:
   print("--exclude requires --categorize be present")
   exit(1)
 
