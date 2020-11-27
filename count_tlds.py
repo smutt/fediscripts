@@ -20,7 +20,7 @@ class TLDCount():
 
 # BEGIN EXECUTION
 ap = argparse.ArgumentParser(description='Count TLDs used from a consolidated file')
-ap.add_argument(dest='infile', type=str, help='Input file')
+ap.add_argument('-i', '--input-file', dest='infile', type=str, help='Input file')
 ap.add_argument('-c', '--categorize', dest='cat', nargs=1, help='Categorize by supplied CSV file')
 ap.add_argument('-x', '--exclude', dest='exclude', nargs='+', help='If categorizing, exclude these TLDs from categorization')
 args = ap.parse_args()
