@@ -34,6 +34,8 @@ import string
 
 DNS_MAX_QUERIES = 5 # Number of query retries before we give up
 IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will alwoys be up
+MAX_THREADS = 20 # Max number of threads for the multiprocessing pool
+MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
 
 ###########
 # CLASSES #
@@ -98,6 +100,15 @@ class FediServer():
 #############
 # FUNCTIONS #
 #############
+
+# Returns the location of an executable binary
+# Returns None if binary cannot be found
+def find_binary(fn):
+  for directory in ['/usr/bin/', '/usr/sbin/', '/bin/', '/sbin/', '/usr/local/bin/', '/usr/local/sbin/']:
+    if os.path.exists(directory + fn):
+      if os.access(directory + fn, os.X_OK):
+        return directory + fn
+  return None
 
 # Parse consolidated file and return dict of FediServers
 # Takes a path to the consolidated file
@@ -175,13 +186,6 @@ def dns_query(name, dtype):
             + name + " " + dtype)
     exit(1)
 
-# Returns True if domain resolves to A or AAAA
-# Otherwise returns False
-def test_dns(domain):
-  if not dns_query(domain, 'A'):
-    return dns_query(domain, 'AAAA')
-  return True
-
 # Perform test on passed list of instances
 # Test is a function that returns True/False
 # Return list of instances that passed
@@ -191,15 +195,79 @@ def perform_test(test, instances):
     for ii in range(len(instances)):
       results.append(test(instances[ii].domain))
   else:
-    num_threads = max(2, min(10, math.floor(len(instances) / 2))) # Kinda arbitrary
-    pool = multiprocessing.pool.ThreadPool(processes=num_threads)
+    thread_count = max(MIN_THREADS, min(MAX_THREADS, math.floor(len(instances) / 2))) # Kinda arbitrary
+    #print("Info: thread_count:" + str(thread_count))
+    pool = multiprocessing.pool.ThreadPool(processes=thread_count)
     results = pool.map(test, [ins.domain for ins in instances])
 
   for ii in range(len(results)):
     if not results[ii]:
-      del instances[ii]
+      instances[ii] = None
 
-  return instances
+  return [ins for ins in instances if ins]
+
+# Returns True if domain resolves to A or AAAA
+# Otherwise returns False
+def test_dns(domain):
+  if not dns_query(domain, 'A'):
+    return dns_query(domain, 'AAAA')
+  return True
+
+# Return True if domain zone contains DS record
+# OTherwise returns False
+def test_dnssec(domain):
+  try:
+    zone = dns.resolver.zone_for_name(domain).to_text()
+  except dns.resolver.NoRootSOA:
+    return False
+
+  return dns_query(zone, 'DS')
+
+# Wrapper functions for test_ping()
+def test_ping4(domain):
+  if dns_query(domain, 'A'):
+    return test_ping(find_binary('ping') + ' -4', domain)
+  return False
+
+def test_ping6(domain):
+  if dns_query(domain, 'AAAA'):
+    return test_ping(find_binary('ping') + ' -6', domain)
+  return False
+
+# Perform a ping
+# Takes a ping binary location and a domain
+# Returns False if no response, otherwise returns True
+def test_ping(binary, domain):
+  NUM_REQS = 4
+  ping_str = binary + ' -qc ' + str(NUM_REQS) + " " + domain
+
+  try:
+    result = subprocess.run(ping_str.split(), check=True, capture_output=True, text=True)
+  except subprocess.TimeoutExpired as e:
+    print("test_ping:subprocess.TimeoutExpired:" + domain + " "  + str(e))
+    return False
+  except subprocess.CalledProcessError as e: # This "should" catch all hosts that failed to reply
+    return False
+  except OSError as e:
+    print("test_ping:OSERROR:" + domain + " "  + str(e))
+    return False
+  except subprocess.SubprocessError:
+    print("test_ping:subprocess.SubprocessError:" + domain)
+    return False
+
+  try:
+    result.check_returncode()
+  except CalledProcessError:
+    return False
+
+  if not result.stdout:
+    return False
+
+  for line in result.stdout.split('\n'):
+    if '% packet loss' in line:
+      if line.split('%')[0][:-3] == '100':
+        return False # This "should" never actually happen
+  return True
 
 ###################
 # BEGIN EXECUTION #
@@ -210,11 +278,13 @@ input_group = ap.add_mutually_exclusive_group()
 input_group.add_argument('instance', nargs='?', type=str, help='Domains under test')
 input_group.add_argument('-i', '--input-file', dest='infile', type=str, help='Consolidated list of hosts input file')
 ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
+ap.add_argument('--hits', dest='fedi', type=int, default=0, help='Only test instances with X hits or more')
+
+ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
+ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
 ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Output instances passing all tests')
-ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output DNSSEC signed instances')
+ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with associated DS records. No validation performed.')
 ap.add_argument('-f', '--fedi-test', dest='fedi', action='store_true', default=False, help='Output instances receptive to the ActivityPub protocol')
-ap.add_argument('-p4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
-ap.add_argument('-p6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
 ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve via DNS')
 ap.add_argument('-u', '--user-agent', dest='agent', action='store', default='', type=str, help='Output instances matching passed user-agent')
 args = ap.parse_args()
@@ -236,25 +306,36 @@ if args.instance:
     print("Invalid domain:" + args.instance)
     exit(1)
 else:
-  instances = parse_consolidated(args.infile).values() # This returns a view and not a list, so maybe trouble
+  instances = list(parse_consolidated(args.infile).values())
 
 if len(instances) == 0:
   print("Error: No instances for testing")
   exit(1)
 
-# Is IPv6 supported on this host?
-if args.ping6:
+if args.dns or args.all:
+  instances = perform_test(test_dns, instances)
+
+if args.dnssec or args.all:
+  instances = perform_test(test_dnssec, instances)
+
+if args.ping4 or args.all:
+  instances = perform_test(test_ping4, instances)
+
+if args.ping6 or args.all:
+  ipv6_support = True
   try:
     s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
     s.connect((IPV6_TEST_ADDY, 53))
     s.close()
   except OSError:
     if args.ping6:
-      print("Local host does not support IPv6 yet --ping-ipv6 requested")
+      print("Error: Local host does not support IPv6, and --ping-ipv6 requested")
       exit(1)
+    else:
+      ipv6_support = False
 
-if args.dns or args.all:
-  instances = perform_test(test_dns, instances)
+  if ipv6_support:
+    instances = perform_test(test_ping6, instances)
 
 for ins in instances:
   print(repr(ins))
