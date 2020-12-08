@@ -4,18 +4,19 @@
 
 import argparse
 import datetime
-#import dns.exception
-#import dns.message
-#import dns.resolver
-#import dns.rcode
-#import dns.rdataclass
-#import dns.rdatatype
-#import dns.query
+import dns.exception
+import dns.message
+import dns.resolver
+import dns.rcode
+import dns.rdataclass
+import dns.rdatatype
+import dns.query
 #import ipaddress
 #import itertools
 import json
+import math
 import os
-#import multiprocessing.pool
+import multiprocessing.pool
 import random
 import signal
 import socket
@@ -26,6 +27,17 @@ import threading
 import time
 import urllib.parse
 import string
+
+#############
+# CONSTANTS #
+#############
+
+DNS_MAX_QUERIES = 5 # Number of query retries before we give up
+IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will alwoys be up
+
+###########
+# CLASSES #
+###########
 
 class FediServer():
   DOMAIN_CHARS = string.ascii_letters + string.digits + '-' + '.'
@@ -106,8 +118,11 @@ def parse_consolidated(path):
       continue
 
     toks = line.split(',')
-    rv[toks[0].strip()] = FediServer(toks[0].strip(), toks[1].strip(), toks[2].strip())
-    rv[toks[0].strip()].hits = int(toks[3].strip())
+    try:
+      rv[toks[0].strip()] = FediServer(toks[0].strip(), toks[1].strip(), toks[2].strip())
+      rv[toks[0].strip()].hits = int(toks[3].strip())
+    except ValueError:
+      print("Error: Bad domain:" + toks[0].strip())
 
   fh.close()
   return rv
@@ -137,6 +152,36 @@ def write_consolidated(path, servers_dict):
     fh.write(server.domain + "," + str(server.first_seen) + "," + str(server.last_seen) + "," + str(server.hits) + "\n")
 
 
+# Perform DNS query and return True if name exists
+# Otherwise return False
+# Handle all exceptions from dnspython
+def dns_query(name, dtype):
+  try:
+    dns.resolver.resolve(name, dtype)
+    return True
+  except dns.exception.Timeout:
+    return False
+  except dns.resolver.NXDOMAIN:
+    return False
+  except dns.resolver.YXDOMAIN:
+    return False
+  except dns.resolver.NoAnswer:
+    return False
+  except dns.resolver.NoNameservers:
+    print("Error: No available DNS recursive server")
+    exit(1)
+  except:
+    print("Error: Unknown error attempting DNS resolution:" \
+            + name + " " + dtype)
+    exit(1)
+
+# Returns True if domain resolves to A or AAAA
+# Otherwise returns False
+def test_dns(domain):
+  if not dns_query(domain, 'A'):
+    return dns_query(domain, 'AAAA')
+  return True
+
 ###################
 # BEGIN EXECUTION #
 ###################
@@ -146,23 +191,64 @@ input_group = ap.add_mutually_exclusive_group()
 input_group.add_argument('instance', nargs='?', type=str, help='Domains under test')
 input_group.add_argument('-i', '--input-file', dest='infile', type=str, help='Consolidated list of hosts input file')
 ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
-ap.add_argument('-a', '--all-tests', action='store_true', default=False, help='Output instances passing all tests')
-ap.add_argument('-d', '--dnssec', action='store_true', default=False, help='Output DNSSEC signed instances')
-ap.add_argument('-f', '--fedi-test', action='store_true', default=False, help='Output instances receptive to the ActivityPub protocol')
-ap.add_argument('-p', '--ping', action='store_true', default=False, help='Output instances answering ICMP echo requests')
-ap.add_argument('-r', '--dns-resolve', action='store_true', default=False, help='Output instances that resolve via DNS')
-ap.add_argument('-u', '--user-agent', action='store', default='', type=str, help='Output instances matching passed user-agent')
+ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Output instances passing all tests')
+ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output DNSSEC signed instances')
+ap.add_argument('-f', '--fedi-test', dest='fedi', action='store_true', default=False, help='Output instances receptive to the ActivityPub protocol')
+ap.add_argument('-p4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
+ap.add_argument('-p6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
+ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve via DNS')
+ap.add_argument('-u', '--user-agent', dest='agent', action='store', default='', type=str, help='Output instances matching passed user-agent')
 args = ap.parse_args()
 
+if not args.instance and not args.infile:
+  print("No input specified")
+  exit(1)
+
+if not args.all and not args.dnssec and not args.fedi and not args.ping4 and not args.ping6 and not args.dns:
+  print("No tests requested, exiting")
+  exit(1)
+
+# Build dict of instances
 if args.instance:
-  instances = {}
+  instances = []
   try:
-    instances[args.instance] = FediServer(args.instance.strip(), 0)
-  except:
+    instances.append(FediServer(args.instance.strip(), 0))
+  except ValueError:
     print("Invalid domain:" + args.instance)
     exit(1)
 else:
-  instances = parse_consolidated(args.infile)
+  instances = parse_consolidated(args.infile).values() # This returns a view and not a list, so maybe trouble
 
-for ins in [v for k,v in instances.items()]:
+# Is IPv6 supported on this host?
+if args.ping6:
+  try:
+    s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    s.connect((IPV6_TEST_ADDY, 53))
+    s.close()
+  except OSError:
+    if args.ping6:
+      print("Local host does not support IPv6 yet --ping-ipv6 requested")
+      exit(1)
+
+# Determine number of test threads
+if len(instances) < 5:
+  num_threads = 1
+else:
+  num_threads = max(2, min(10, math.floor(len(instances) / 2)))
+  pool = multiprocessing.pool.ThreadPool(processes=num_threads)
+
+if args.dns or args.all:
+  if num_threads == 1:
+    dns_tests = []
+    for ii in range(len(instances)):
+      dns_tests.append(test_dns(instances[ii].domain))
+  else:
+    dns_tests = pool.map(test_dns, [ins.domain for ins in instances])
+
+  for ii in range(len(dns_tests)):
+    if not dns_tests[ii]:
+      del instances[ii]
+
+
+for ins in instances:
   print(repr(ins))
