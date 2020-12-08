@@ -182,6 +182,25 @@ def test_dns(domain):
     return dns_query(domain, 'AAAA')
   return True
 
+# Perform test on passed list of instances
+# Test is a function that returns True/False
+# Return list of instances that passed
+def perform_test(test, instances):
+  if len(instances) < 5:
+    results = []
+    for ii in range(len(instances)):
+      results.append(test(instances[ii].domain))
+  else:
+    num_threads = max(2, min(10, math.floor(len(instances) / 2))) # Kinda arbitrary
+    pool = multiprocessing.pool.ThreadPool(processes=num_threads)
+    results = pool.map(test, [ins.domain for ins in instances])
+
+  for ii in range(len(results)):
+    if not results[ii]:
+      del instances[ii]
+
+  return instances
+
 ###################
 # BEGIN EXECUTION #
 ###################
@@ -219,6 +238,10 @@ if args.instance:
 else:
   instances = parse_consolidated(args.infile).values() # This returns a view and not a list, so maybe trouble
 
+if len(instances) == 0:
+  print("Error: No instances for testing")
+  exit(1)
+
 # Is IPv6 supported on this host?
 if args.ping6:
   try:
@@ -230,25 +253,8 @@ if args.ping6:
       print("Local host does not support IPv6 yet --ping-ipv6 requested")
       exit(1)
 
-# Determine number of test threads
-if len(instances) < 5:
-  num_threads = 1
-else:
-  num_threads = max(2, min(10, math.floor(len(instances) / 2)))
-  pool = multiprocessing.pool.ThreadPool(processes=num_threads)
-
 if args.dns or args.all:
-  if num_threads == 1:
-    dns_tests = []
-    for ii in range(len(instances)):
-      dns_tests.append(test_dns(instances[ii].domain))
-  else:
-    dns_tests = pool.map(test_dns, [ins.domain for ins in instances])
-
-  for ii in range(len(dns_tests)):
-    if not dns_tests[ii]:
-      del instances[ii]
-
+  instances = perform_test(test_dns, instances)
 
 for ins in instances:
   print(repr(ins))
