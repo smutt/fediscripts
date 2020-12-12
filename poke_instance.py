@@ -21,7 +21,7 @@ import string
 #############
 
 DNS_MAX_QUERIES = 5 # Number of query retries before we give up
-IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will alwoys be up
+IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will always be up
 MAX_THREADS = 100 # Max number of threads for the multiprocessing pool
 MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
 
@@ -122,6 +122,8 @@ def parse_consolidated(path):
       rv[toks[0].strip()].hits = int(toks[3].strip())
     except ValueError:
       print("Error: Bad domain:" + toks[0].strip())
+    except:
+      print("Error: Bad line in input-file")
 
   fh.close()
   return rv
