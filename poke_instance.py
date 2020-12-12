@@ -3,29 +3,17 @@
 #  Copyright (C) 2020, Andrew McConachie, <andrew@depht.com>
 
 import argparse
-import datetime
 import dns.exception
-import dns.message
 import dns.resolver
-import dns.rcode
-import dns.rdataclass
-import dns.rdatatype
-import dns.query
-#import ipaddress
-#import itertools
-import json
 import math
 import os
 import multiprocessing.pool
-import random
-import signal
 import socket
-import statistics
 import subprocess
 import sys
-import threading
-import time
+#import threading
 import urllib.parse
+import urllib.request
 import string
 
 #############
@@ -34,7 +22,7 @@ import string
 
 DNS_MAX_QUERIES = 5 # Number of query retries before we give up
 IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will alwoys be up
-MAX_THREADS = 20 # Max number of threads for the multiprocessing pool
+MAX_THREADS = 100 # Max number of threads for the multiprocessing pool
 MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
 
 ###########
@@ -54,7 +42,7 @@ class FediServer():
       self.last_seen = int(first_seen)
 
   def __repr__(self):
-    return "dn: " + self.domain + " hits:" + str(self.hits) + " fs:" + str(self.first_seen) + " ls:" + str(self.last_seen)
+    return self.domain + ',' + str(self.first_seen) + ',' + str(self.last_seen) + ',' + str(self.hits)
 
   def __str__(self):
     return self.__repr__()
@@ -162,7 +150,6 @@ def write_consolidated(path, servers_dict):
   for server in servers:
     fh.write(server.domain + "," + str(server.first_seen) + "," + str(server.last_seen) + "," + str(server.hits) + "\n")
 
-
 # Perform DNS query and return True if name exists
 # Otherwise return False
 # Handle all exceptions from dnspython
@@ -178,13 +165,12 @@ def dns_query(name, dtype):
     return False
   except dns.resolver.NoAnswer:
     return False
-  except dns.resolver.NoNameservers:
-    print("Error: No available DNS recursive server")
-    exit(1)
+  except dns.resolver.NoNameservers: # SERVFAIL
+    return False
   except:
     print("Error: Unknown error attempting DNS resolution:" \
             + name + " " + dtype)
-    exit(1)
+    return False
 
 # Perform test on passed list of instances
 # Test is a function that returns True/False
@@ -195,8 +181,8 @@ def perform_test(test, instances):
     for ii in range(len(instances)):
       results.append(test(instances[ii].domain))
   else:
-    thread_count = max(MIN_THREADS, min(MAX_THREADS, math.floor(len(instances) / 2))) # Kinda arbitrary
-    #print("Info: thread_count:" + str(thread_count))
+    thread_count = max(MIN_THREADS, min(MAX_THREADS, math.ceil(len(instances) / 2)))
+    verbose("thread_count:" + str(thread_count))
     pool = multiprocessing.pool.ThreadPool(processes=thread_count)
     results = pool.map(test, [ins.domain for ins in instances])
 
@@ -220,6 +206,8 @@ def test_dnssec(domain):
     zone = dns.resolver.zone_for_name(domain).to_text()
   except dns.resolver.NoRootSOA:
     return False
+  except:
+    return False
 
   return dns_query(zone, 'DS')
 
@@ -238,7 +226,7 @@ def test_ping6(domain):
 # Takes a ping binary location and a domain
 # Returns False if no response, otherwise returns True
 def test_ping(binary, domain):
-  NUM_REQS = 4
+  NUM_REQS = 3
   ping_str = binary + ' -qc ' + str(NUM_REQS) + " " + domain
 
   try:
@@ -269,57 +257,96 @@ def test_ping(binary, domain):
         return False # This "should" never actually happen
   return True
 
+# Fetch domain/index.html and return True if something responds
+# Should also return True on HTTP 404
+def test_https(domain):
+  try:
+    urllib.request.urlopen('https://' + domain + '/index.html')
+  except urllib.error.HTTPError as e:
+    #verbose("HTTPS HTTPError:" + str(e))
+    return True
+  except urllib.error.URLError as e:
+    #verbose(domain + " HTTPS URLError:" + str(e))
+    return False
+  else:
+    return True
+
+# Only print string s if args.verbose is True
+def verbose(s):
+  if args.verbose:
+    print(s)
+
 ###################
 # BEGIN EXECUTION #
 ###################
 
-ap = argparse.ArgumentParser(description = 'Perform tests on active ActivityPub Instances')
+ap = argparse.ArgumentParser(description = 'Perform tests on Fediverse instances. Output instances that pass all given tests.')
+
+ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
+ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
+ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with DS RR in parent. No validation performed.')
+ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances listening on TCP port 443')
+ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
+
+ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Test everything')
+ap.add_argument('-t', '--totals', dest='totals', action='store_true', default=False, help='Print test passing totals only. Sets verbose and overrides output-file.')
+ap.add_argument('-v', '--verbose', dest='verbose', action='store_true', default=False, help='Verbose output')
+ap.add_argument('-m', '--min-hits', dest='minhits', type=int, default=None, help='Only test instances with hits >= MINHITS. Requires input-file.')
+
 input_group = ap.add_mutually_exclusive_group()
 input_group.add_argument('instance', nargs='?', type=str, help='Domains under test')
 input_group.add_argument('-i', '--input-file', dest='infile', type=str, help='Consolidated list of hosts input file')
 ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
-ap.add_argument('--hits', dest='fedi', type=int, default=0, help='Only test instances with X hits or more')
 
-ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
-ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
-ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Output instances passing all tests')
-ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with associated DS records. No validation performed.')
-ap.add_argument('-f', '--fedi-test', dest='fedi', action='store_true', default=False, help='Output instances receptive to the ActivityPub protocol')
-ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve via DNS')
-ap.add_argument('-u', '--user-agent', dest='agent', action='store', default='', type=str, help='Output instances matching passed user-agent')
 args = ap.parse_args()
+
+if args.totals:
+  args.verbose = True
 
 if not args.instance and not args.infile:
   print("No input specified")
   exit(1)
 
-if not args.all and not args.dnssec and not args.fedi and not args.ping4 and not args.ping6 and not args.dns:
+if not args.all and not args.ping4 and not args.ping6 and not args.dnssec and not args.https and not args.dns:
   print("No tests requested, exiting")
   exit(1)
 
-# Build dict of instances
+# Build list of instances
 if args.instance:
+  if args.minhits:
+    print("min-hits requires input-file")
+    exit(1)
+
   instances = []
   try:
     instances.append(FediServer(args.instance.strip(), 0))
   except ValueError:
     print("Invalid domain:" + args.instance)
     exit(1)
+
 else:
   instances = list(parse_consolidated(args.infile).values())
+  if args.minhits:
+    instances = [ins for ins in instances if ins.hits >= args.minhits]
 
 if len(instances) == 0:
   print("Error: No instances for testing")
   exit(1)
 
 if args.dns or args.all:
+  verbose('Testing DNS resolution:' + str(len(instances)))
   instances = perform_test(test_dns, instances)
+  verbose('Passed DNS resolution:' + str(len(instances)))
 
 if args.dnssec or args.all:
+  verbose('Testing DNSSEC:' + str(len(instances)))
   instances = perform_test(test_dnssec, instances)
+  verbose('Passed DNSSEC:' + str(len(instances)))
 
 if args.ping4 or args.all:
+  verbose('Testing ping-ipv4:' + str(len(instances)))
   instances = perform_test(test_ping4, instances)
+  verbose('Passed ping-ipv4:' + str(len(instances)))
 
 if args.ping6 or args.all:
   ipv6_support = True
@@ -328,14 +355,27 @@ if args.ping6 or args.all:
     s.connect((IPV6_TEST_ADDY, 53))
     s.close()
   except OSError:
-    if args.ping6:
+   ipv6_support = False
+   if args.ping6:
       print("Error: Local host does not support IPv6, and --ping-ipv6 requested")
       exit(1)
-    else:
-      ipv6_support = False
 
   if ipv6_support:
+    verbose('Testing ping-ipv6:' + str(len(instances)))
     instances = perform_test(test_ping6, instances)
+    verbose('Passed ping-ipv6:' + str(len(instances)))
 
-for ins in instances:
-  print(repr(ins))
+if args.https or args.all:
+  verbose('Testing https:' + str(len(instances)))
+  instances = perform_test(test_https, instances)
+  verbose('Passed https:' + str(len(instances)))
+
+if not args.totals:
+  if args.outfile:
+    dins = {}
+    for ins in instances:
+      dins[ins.domain] = ins
+    write_consolidated(args.outfile, dins)
+  else:
+    for ins in instances:
+      print(repr(ins))
