@@ -12,9 +12,9 @@ import os
 class FediServer():
   DOMAIN_CHARS = string.ascii_letters + string.digits + '-' + '.'
 
-  def __init__(self, domain, first_seen, last_seen=None):
+  def __init__(self, domain, first_seen, last_seen=None, hits=1):
     self.domain = self.confirm_domain(domain.lower().strip())
-    self.hits = 1
+    self.hits = hits
     self.first_seen = int(first_seen)
     if last_seen:
       self.last_seen = int(last_seen)
