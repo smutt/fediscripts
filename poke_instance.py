@@ -11,10 +11,10 @@ import multiprocessing.pool
 import socket
 import subprocess
 import sys
-#import threading
 import urllib.parse
 import urllib.request
-import string
+
+import fediserver
 
 #############
 # CONSTANTS #
@@ -24,66 +24,6 @@ DNS_MAX_QUERIES = 5 # Number of query retries before we give up
 IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will always be up
 MAX_THREADS = 100 # Max number of threads for the multiprocessing pool
 MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
-
-###########
-# CLASSES #
-###########
-
-class FediServer():
-  DOMAIN_CHARS = string.ascii_letters + string.digits + '-' + '.'
-
-  def __init__(self, domain, first_seen, last_seen=None):
-    self.domain = self.confirm_domain(domain.lower().strip())
-    self.hits = 1
-    self.first_seen = int(first_seen)
-    if last_seen:
-      self.last_seen = int(last_seen)
-    else:
-      self.last_seen = int(first_seen)
-
-  def __repr__(self):
-    return self.domain + ',' + str(self.first_seen) + ',' + str(self.last_seen) + ',' + str(self.hits)
-
-  def __str__(self):
-    return self.__repr__()
-
-  # Test passed string to confirm it is valid domain
-  # Rightmost character can be '.', but we return without
-  # Return valid domain
-  def confirm_domain(self, domain):
-    for s in domain:
-      if s not in self.DOMAIN_CHARS:
-        raise ValueError
-
-    domain = domain.rstrip('.')
-    if domain[0] == '.':
-      raise ValueError
-
-    for tok in domain.split('.'):
-      if len(tok) == 0 :
-        raise ValueError
-      if len(tok) > 63:
-        raise ValueError
-      if tok.startswith('-'):
-        raise ValueError
-      if tok.endswith('-'):
-        raise ValueError
-
-    return domain
-
-  def push_hit(self, ts):
-    self.hits += 1
-    if self.first_seen > int(ts):
-      self.first_seen = int(ts)
-    if self.last_seen < int(ts):
-      self.last_seen = int(ts)
-
-  def combine(self, hits, first_seen, last_seen):
-    self.hits += hits
-    if self.first_seen > int(first_seen):
-      self.first_seen = int(first_seen)
-    if self.last_seen < int(last_seen):
-      self.last_seen = int(last_seen)
 
 #############
 # FUNCTIONS #
@@ -97,60 +37,6 @@ def find_binary(fn):
       if os.access(directory + fn, os.X_OK):
         return directory + fn
   return None
-
-# Parse consolidated file and return dict of FediServers
-# Takes a path to the consolidated file
-def parse_consolidated(path):
-  rv = {}
-
-  if not os.path.exists(path):
-    return rv
-
-  if not os.access(path, os.R_OK):
-    return rv
-
-  fh = open(path, 'r')
-  for line in fh.read().split('\n'):
-    if len(line) == 0:
-      continue
-    if line[0] == '#':
-      continue
-
-    toks = line.split(',')
-    try:
-      rv[toks[0].strip()] = FediServer(toks[0].strip(), toks[1].strip(), toks[2].strip())
-      rv[toks[0].strip()].hits = int(toks[3].strip())
-    except ValueError:
-      print("Error: Bad domain:" + toks[0].strip())
-    except:
-      print("Error: Bad line in input-file")
-
-  fh.close()
-  return rv
-
-# Writes consolidated file
-# Takes a path to write to, and a dict of FediServers
-def write_consolidated(path, servers_dict):
-  if os.path.exists(path):
-    if not os.access(path, os.W_OK):
-      print("Error: Output file not writable:" + path)
-      exit(1)
-  else:
-    if len(os.path.dirname(path)) == 0:
-      if not os.access('./', os.W_OK):
-        print("Error: Working directory not writable")
-        exit(1)
-    else:
-      if not os.access(os.path.dirname(path), os.W_OK):
-        print("Error: Directory not writable:", os.path.dirname(path))
-        exit(1)
-
-  fh = open(path, 'w')
-  servers = [v for k,v in servers_dict.items()]
-  servers.sort(key=lambda x: x.domain, reverse=False)
-  fh.write("#domain,first_seen,last_seen,hits\n")
-  for server in servers:
-    fh.write(server.domain + "," + str(server.first_seen) + "," + str(server.last_seen) + "," + str(server.hits) + "\n")
 
 # Perform DNS query and return True if name exists
 # Otherwise return False
@@ -321,13 +207,13 @@ if args.instance:
 
   instances = []
   try:
-    instances.append(FediServer(args.instance.strip(), 0))
+    instances.append(fediserver.FediServer(args.instance.strip(), 0))
   except ValueError:
     print("Invalid domain:" + args.instance)
     exit(1)
 
 else:
-  instances = list(parse_consolidated(args.infile).values())
+  instances = list(fediserver.parse_consolidated(args.infile).values())
   if args.minhits:
     instances = [ins for ins in instances if ins.hits >= args.minhits]
 
@@ -377,7 +263,7 @@ if not args.totals:
     dins = {}
     for ins in instances:
       dins[ins.domain] = ins
-    write_consolidated(args.outfile, dins)
+    fediserver.write_consolidated(args.outfile, dins)
   else:
     for ins in instances:
       print(repr(ins))
