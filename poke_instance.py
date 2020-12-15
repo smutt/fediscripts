@@ -23,8 +23,9 @@ import fediserver
 
 DNS_MAX_QUERIES = 5 # Number of query retries before we give up
 IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will always be up
-MAX_THREADS = 100 # Max number of threads for the multiprocessing pool
+MAX_THREADS = 1000 # Max number of threads for the multiprocessing pool, bad things happen if this goes bigger than 1000
 MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
+HTTPS_TIMEOUT = 10 # Timeout value for HTTPS connections in seconds
 
 # Common relative URIs that different implementations respond on with their default installs
 # Each entry in dict is a list
@@ -41,6 +42,16 @@ COMMON_URLS['robots'] = ['robots.txt']
 #############
 # FUNCTIONS #
 #############
+
+# Only print string s if args.verbose is True
+def verbose(s):
+  if args.verbose:
+    print(s)
+
+# Only print string s if args.debug is True
+def debug(s):
+  if args.debug:
+    print(s)
 
 # Returns the location of an executable binary
 # Returns None if binary cannot be found
@@ -93,6 +104,10 @@ def perform_test(test, instances):
 
   return [ins for ins in instances if ins]
 
+##################
+# TEST FUNCTIONS #
+##################
+
 # Returns True if domain resolves to A or AAAA
 # Otherwise returns False
 def test_dns(domain):
@@ -115,33 +130,33 @@ def test_dnssec(domain):
 # Wrapper functions for test_ping()
 def test_ping4(domain):
   if dns_query(domain, 'A'):
-    return test_ping(find_binary('ping') + ' -4', domain)
+    return test_ping(domain, find_binary('ping') + ' -4')
   return False
 
 def test_ping6(domain):
   if dns_query(domain, 'AAAA'):
-    return test_ping(find_binary('ping') + ' -6', domain)
+    return test_ping(domain, find_binary('ping') + ' -6')
   return False
 
 # Perform a ping
 # Takes a ping binary location and a domain
 # Returns False if no response, otherwise returns True
-def test_ping(binary, domain):
+def test_ping(domain, binary):
   NUM_REQS = 3
   ping_str = binary + ' -qc ' + str(NUM_REQS) + " " + domain
 
   try:
     result = subprocess.run(ping_str.split(), check=True, capture_output=True, text=True)
   except subprocess.TimeoutExpired as e:
-    print("test_ping:subprocess.TimeoutExpired:" + domain + " "  + str(e))
+    debug("test_ping:subprocess.TimeoutExpired:" + domain + " "  + str(e))
     return False
   except subprocess.CalledProcessError as e: # This "should" catch all hosts that failed to reply
     return False
   except OSError as e:
-    print("test_ping:OSERROR:" + domain + " "  + str(e))
+    debug("test_ping:OSERROR:" + domain + " "  + str(e))
     return False
   except subprocess.SubprocessError:
-    print("test_ping:subprocess.SubprocessError:" + domain)
+    debug("test_ping:subprocess.SubprocessError:" + domain)
     return False
 
   try:
@@ -158,56 +173,71 @@ def test_ping(binary, domain):
         return False # This "should" never actually happen
   return True
 
-# Fetch domain/index.html and return True if something responds
-# Should also return True on HTTP 404
+def test_ninfo(domain):
+  return test_url(domain, '.well-known/nodeinfo')
+
+def test_ninfo2(domain):
+  return test_url(domain, '.well-known/x-nodeinfo2')
+
+# Return True if domain hosts URL
+# Returns False on any failure to fetch
+def test_url(domain, url):
+  s = 'https://' + domain + '/' + url
+
+  try:
+    urllib.request.urlopen(s, timeout=HTTPS_TIMEOUT)
+  except:
+    debug('test_url:' + s + ' Fail')
+    return False
+  else:
+    debug('test_url:' + s + ' Success')
+    return True
+
+# Fetch different domains and return True if something responds
 def test_https(domain):
   for implementation,urls in COMMON_URLS.items():
     for url in urls:
       try:
-        urllib.request.urlopen('https://' + domain + '/' + url)
+        urllib.request.urlopen('https://' + domain + '/' + url, timeout=HTTPS_TIMEOUT)
       except urllib.error.HTTPError as e:
         if e.getcode() >= 400 and e.getcode() < 500:
-          #verbose(domain + '/' + url + ' HTTPS HTTPError:' + str(e.getcode()))
           continue
         else:
-          verbose(domain + " HTTPS HTTPError:" + str(e.getcode()))
+          debug(domain + " HTTPS HTTPError:" + str(e.getcode()))
           return False
       except urllib.error.URLError as e:
-        verbose(domain + " HTTPS URLError:" + str(e))
+        debug(domain + " HTTPS URLError:" + str(e))
         return False
       except:
-        verbose(domain + " HTTPS GenError")
+        debug(domain + " HTTPS GenError")
         return False
       else:
-        verbose(domain + " Found:" + implementation)
+        debug(domain + " Found:" + implementation)
         if implementation == 'bogus':
           return False
         else:
           return True
 
-  verbose(domain + " No instance or unknown instance type")
+  debug(domain + " No instance or unknown instance type")
   return False
-
-# Only print string s if args.verbose is True
-def verbose(s):
-  if args.verbose:
-    print(s)
 
 ###################
 # BEGIN EXECUTION #
 ###################
 
-ap = argparse.ArgumentParser(description = 'Perform tests on Fediverse instances. Output instances that pass all given tests.')
+ap = argparse.ArgumentParser(description = 'Perform ordered tests on Fediverse instances. Order of tests is always r,d,4,6,n,n2,s. Output instances that pass all given tests.')
 
+ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
+ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with DS RR in parent. No validation performed.')
 ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
 ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
-ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with DS RR in parent. No validation performed.')
-ap.add_argument('-n', '--node-info', dest='node-info', action='store_true', default=False, help='Output instances hosting /.well-known/node-info files')
-ap.add_argument('-n2', '--node-info2', dest='node-info2', action='store_true', default=False, help='Output instances hosting /.well-known/x-node-info2 files')
+ap.add_argument('-n', '--node-info', dest='ninfo', action='store_true', default=False, help='Output instances hosting /.well-known/nodeinfo files')
+ap.add_argument('-n2', '--node-info2', dest='ninfo2', action='store_true', default=False, help='Output instances hosting /.well-known/x-nodeinfo2 files')
 ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances listening on TCP port 443')
-ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
+
 
 ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Test everything')
+ap.add_argument('-g', '--debug', dest='debug', action='store_true', default=False, help='Enable debug mode, LOTS of output')
 ap.add_argument('-t', '--totals', dest='totals', action='store_true', default=False, help='Print test passing totals only. Sets verbose and overrides output-file.')
 ap.add_argument('-v', '--verbose', dest='verbose', action='store_true', default=False, help='Verbose output')
 ap.add_argument('-m', '--min-hits', dest='minhits', type=int, default=None, help='Only test instances with hits >= MINHITS. Requires input-file.')
@@ -226,7 +256,8 @@ if not args.instance and not args.infile:
   print("No input specified")
   exit(1)
 
-if not args.all and not args.ping4 and not args.ping6 and not args.dnssec and not args.https and not args.dns:
+if not args.all and not args.ping4 and not args.ping6 and not args.dnssec \
+  and not args.ninfo and not args.ninfo2 and not args.https and not args.dns:
   print("No tests requested, exiting")
   exit(1)
 
@@ -283,6 +314,16 @@ if args.ping6 or args.all:
     verbose('Testing ping-ipv6:' + str(len(instances)))
     instances = perform_test(test_ping6, instances)
     verbose('Passed ping-ipv6:' + str(len(instances)))
+
+if args.ninfo or args.all:
+  verbose('Testing node-info:' + str(len(instances)))
+  instances = perform_test(test_ninfo, instances)
+  verbose('Passed node-info:' + str(len(instances)))
+
+if args.ninfo2 or args.all:
+  verbose('Testing node-info2:' + str(len(instances)))
+  instances = perform_test(test_ninfo2, instances)
+  verbose('Passed node-info2:' + str(len(instances)))
 
 if args.https or args.all:
   verbose('Testing https:' + str(len(instances)))
