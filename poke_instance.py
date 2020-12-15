@@ -3,6 +3,7 @@
 #  Copyright (C) 2020, Andrew McConachie, <andrew@depht.com>
 
 import argparse
+import collections
 import dns.exception
 import dns.resolver
 import math
@@ -24,6 +25,18 @@ DNS_MAX_QUERIES = 5 # Number of query retries before we give up
 IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will always be up
 MAX_THREADS = 100 # Max number of threads for the multiprocessing pool
 MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
+
+# Common relative URIs that different implementations respond on with their default installs
+# Each entry in dict is a list
+COMMON_URLS = collections.OrderedDict()
+COMMON_URLS['bogus'] = ['no_one_would_ever_use_this_url_in_real_life']
+COMMON_URLS['mastodon'] = ['actor', 'terms', 'about/more', 'explore']
+COMMON_URLS['pleroma'] = ['main/all', 'main/public', 'relay']
+COMMON_URLS['friendica'] = ['login']
+COMMON_URLS['peertube'] = ['videos/local']
+COMMON_URLS['multiple'] = ['about', '@admin']
+COMMON_URLS['robots'] = ['robots.txt']
+# COMMON_URLS['misskey'] = [] # This one is tough
 
 #############
 # FUNCTIONS #
@@ -148,16 +161,32 @@ def test_ping(binary, domain):
 # Fetch domain/index.html and return True if something responds
 # Should also return True on HTTP 404
 def test_https(domain):
-  try:
-    urllib.request.urlopen('https://' + domain + '/index.html')
-  except urllib.error.HTTPError as e:
-    #verbose("HTTPS HTTPError:" + str(e))
-    return True
-  except urllib.error.URLError as e:
-    #verbose(domain + " HTTPS URLError:" + str(e))
-    return False
-  else:
-    return True
+  for implementation,urls in COMMON_URLS.items():
+    for url in urls:
+      try:
+        urllib.request.urlopen('https://' + domain + '/' + url)
+      except urllib.error.HTTPError as e:
+        if e.getcode() >= 400 and e.getcode() < 500:
+          #verbose(domain + '/' + url + ' HTTPS HTTPError:' + str(e.getcode()))
+          continue
+        else:
+          verbose(domain + " HTTPS HTTPError:" + str(e.getcode()))
+          return False
+      except urllib.error.URLError as e:
+        verbose(domain + " HTTPS URLError:" + str(e))
+        return False
+      except:
+        verbose(domain + " HTTPS GenError")
+        return False
+      else:
+        verbose(domain + " Found:" + implementation)
+        if implementation == 'bogus':
+          return False
+        else:
+          return True
+
+  verbose(domain + " No instance or unknown instance type")
+  return False
 
 # Only print string s if args.verbose is True
 def verbose(s):
@@ -173,6 +202,8 @@ ap = argparse.ArgumentParser(description = 'Perform tests on Fediverse instances
 ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
 ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
 ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with DS RR in parent. No validation performed.')
+ap.add_argument('-n', '--node-info', dest='node-info', action='store_true', default=False, help='Output instances hosting /.well-known/node-info files')
+ap.add_argument('-n2', '--node-info2', dest='node-info2', action='store_true', default=False, help='Output instances hosting /.well-known/x-node-info2 files')
 ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances listening on TCP port 443')
 ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
 
