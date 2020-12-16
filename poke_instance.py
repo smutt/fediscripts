@@ -25,7 +25,7 @@ DNS_MAX_QUERIES = 5 # Number of query retries before we give up
 IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will always be up
 MAX_THREADS = 1000 # Max number of threads for the multiprocessing pool, bad things happen if this goes bigger than 1000
 MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
-HTTPS_TIMEOUT = 10 # Timeout value for HTTPS connections in seconds
+HTTPS_TIMEOUT = 10 # Timeout value for connections in seconds
 
 # Common relative URIs that different implementations respond on with their default installs
 # Each entry in dict is a list
@@ -36,8 +36,16 @@ COMMON_URLS['pleroma'] = ['main/all', 'main/public', 'relay']
 COMMON_URLS['friendica'] = ['login']
 COMMON_URLS['peertube'] = ['videos/local']
 COMMON_URLS['multiple'] = ['about', '@admin']
-COMMON_URLS['robots'] = ['robots.txt']
+COMMON_URLS['https'] = ['robots.txt', '', 'index.html', 'index.htm']
 # COMMON_URLS['misskey'] = [] # This one is tough
+
+HTTP_HDR = {}
+HTTP_HDR['User-Agent'] = 'https://github.com/smutt/fediscripts'
+HTTP_HDR['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+HTTP_HDR['Accept-Charset'] = 'ISO-8859-1,utf-8;q=0.7,*;q=0.3'
+HTTP_HDR['Accept-Encoding'] = 'none'
+HTTP_HDR['Accept-Language'] = 'en-US,en;q=0.8'
+HTTP_HDR['Connection'] = 'keep-alive'
 
 #############
 # FUNCTIONS #
@@ -97,6 +105,11 @@ def perform_test(test, instances):
     verbose("thread_count:" + str(thread_count))
     pool = multiprocessing.pool.ThreadPool(processes=thread_count)
     results = pool.map(test, [ins.domain for ins in instances])
+
+  # This should never happen, defensive programming
+  if len(instances) != len(results) or None in results:
+    print("Unknown fatal testing error")
+    exit(1)
 
   for ii in range(len(results)):
     if not results[ii]:
@@ -179,22 +192,61 @@ def test_ninfo(domain):
 def test_ninfo2(domain):
   return test_url(domain, '.well-known/x-nodeinfo2')
 
-# Return True if domain hosts URL
+# Return True if we can fetch passed URL from domain
 # Returns False on any failure to fetch
 def test_url(domain, url):
   s = 'https://' + domain + '/' + url
 
   try:
-    urllib.request.urlopen(s, timeout=HTTPS_TIMEOUT)
+    req = urllib.request.Request(s, headers=HTTP_HDR)
+    urllib.request.urlopen(req)
+  except urllib.error.HTTPError as e:
+    debug('test_url:' + s + " HTTPError:" + str(e.getcode()))
+    return False
+  except urllib.error.URLError as e:
+    if isinstance(e.reason, socket.timeout):
+      debug('test_url:' + s + ' socket_timeout')
+    else:
+      debug('test_url:' + s + " URLError:" + str(e))
+    return False
   except:
-    debug('test_url:' + s + ' Fail')
+    debug('test_url:' + s + ' GenFail')
     return False
   else:
     debug('test_url:' + s + ' Success')
     return True
 
-# Fetch different domains and return True if something responds
+# Returns True if any common URL can be fetched from domain
+# If we fetch none of the URLs, but we only get http client errors, return True
 def test_https(domain):
+  for url in COMMON_URLS['https']:
+    s = 'https://' + domain + '/' + url
+
+    try:
+      req = urllib.request.Request(s, headers=HTTP_HDR)
+      urllib.request.urlopen(req)
+    except urllib.error.HTTPError as e:
+      if e.getcode() >= 400 and e.getcode() < 500:
+        continue
+      else:
+        debug('test_https:' + s + " HTTPError:" + str(e.getcode()))
+        return False
+    except urllib.error.URLError as e:
+      if isinstance(e.reason, socket.timeout):
+        debug('test_url:' + s + ' socket_timeout')
+      else:
+        debug('test_url:' + s + " URLError:" + str(e))
+      return False
+    except:
+      debug('test_https:' + s + " GenError")
+      return False
+    else:
+      debug('test_https:' + s + " Success")
+      return True
+  return True
+
+# Attempt to categorize based on URLs common to different instance implementations
+def cat_urls(domain):
   for implementation,urls in COMMON_URLS.items():
     for url in urls:
       try:
@@ -235,7 +287,6 @@ ap.add_argument('-n', '--node-info', dest='ninfo', action='store_true', default=
 ap.add_argument('-n2', '--node-info2', dest='ninfo2', action='store_true', default=False, help='Output instances hosting /.well-known/x-nodeinfo2 files')
 ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances listening on TCP port 443')
 
-
 ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Test everything')
 ap.add_argument('-g', '--debug', dest='debug', action='store_true', default=False, help='Enable debug mode, LOTS of output')
 ap.add_argument('-t', '--totals', dest='totals', action='store_true', default=False, help='Print test passing totals only. Sets verbose and overrides output-file.')
@@ -245,7 +296,10 @@ ap.add_argument('-m', '--min-hits', dest='minhits', type=int, default=None, help
 input_group = ap.add_mutually_exclusive_group()
 input_group.add_argument('instance', nargs='?', type=str, help='Domains under test')
 input_group.add_argument('-i', '--input-file', dest='infile', type=str, help='Consolidated list of hosts input file')
-ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
+output_group = ap.add_mutually_exclusive_group()
+output_group.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
+output_group.add_argument('-cu', '--cat-url', dest='caturl', action='store_true', default=False, help='Attempt to guess implementation type by reachable common URLs. Overrides output-file.')
+output_group.add_argument('-cs', '--cat-schema', dest='catschema', action='store_true', default=False, help='Categorize by schema advertised in /.well-known/nodeinfo. Overrides output-file.')
 
 args = ap.parse_args()
 
@@ -282,6 +336,10 @@ else:
 if len(instances) == 0:
   print("Error: No instances for testing")
   exit(1)
+
+# Set timeout for all connections
+# This SHOULD work according to this, https://docs.python.org/3/howto/urllib2.html
+socket.setdefaulttimeout(HTTPS_TIMEOUT)
 
 if args.dns or args.all:
   verbose('Testing DNS resolution:' + str(len(instances)))
