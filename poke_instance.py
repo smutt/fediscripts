@@ -29,8 +29,9 @@ MAX_THREADS = 1000 # Max number of threads for the multiprocessing pool, bad thi
 MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
 HTTPS_TIMEOUT = 10 # Timeout value for connections in seconds
 
-# Common relative URIs that different implementations respond on with their default installs
+# Common relative relative URLs that different implementations respond on with their default installs
 # Only 'https' should contain URLs common to multiple implementations
+# Bogus is used for testing if instances act on anything
 # Each entry in dict is a list
 COMMON_URLS = collections.OrderedDict()
 COMMON_URLS['bogus'] = ['no_one_would_ever_use_this_url_in_real_life']
@@ -150,21 +151,22 @@ def perform_cat(cat, instances):
       sums[res] = 1
 
   # Sort sums
-  rv =  collections.OrderedDict()
-  largest_key = list(sums)[0]
-  largest_value = sums[largest_key]
+  rv = collections.OrderedDict()
   for ii in range(len(sums)):
+    largest = list(sums)[0]
     for key,value in sums.items():
-      if value > largest_value:
-        largest_key = key
-        largest_value = value
-    rv[largest_key] = sums.pop(largest_key)
-    largest_value = 0
+      if value > sums[largest]:
+        largest = key
+    rv[largest] = sums.pop(largest)
+
   return rv
 
 # Fetch a URL and return its contents as a string, assumes an HTTP(S) URL
-# Raises a chained exception if something bad happens
-def fetch_url(url):
+# Will retry for retries in cases of network errors
+# Raises RuntimeError if something bad happens
+def fetch_url(url, retries=3):
+  if retries == 0:
+    raise RuntimeError('fetch_url.retries_exhausted') from None
 
   # Ensure passed URL is a valid URL
   try:
@@ -182,11 +184,12 @@ def fetch_url(url):
     raise RuntimeError('fetch_url.HTTPError') from e
   except urllib.error.URLError as e:
     if isinstance(e.reason, socket.timeout):
-      debug('fetch_url:' + url + ' socket_timeout')
-      raise RuntimeError('fetch_url.socket_timeout') from e
+      debug('fetch_url:' + url + ' socket_timeout Retrying')
+      #raise RuntimeError('fetch_url.socket_timeout') from e
     else:
-      debug('fetch_url:' + url + ' URLError:' + str(e))
-      raise RuntimeError('fetch_url.URLError') from e
+      debug('fetch_url:' + url + ' URLError:' + str(e) + ' Retrying')
+      #raise RuntimeError('fetch_url.URLError') from e
+    return fetch_url(url, retries-1)
   except UnicodeError as e:
     debug('fetch_url:' + url + ' UnicodeError:' + str(e))
     raise RuntimeError('fetch_url.UnicodeError') from e
@@ -264,15 +267,19 @@ def test_ping(domain, binary):
   return True
 
 def test_ninfo(domain):
-  return test_url(domain, '.well-known/nodeinfo')
+  if not test_url(domain, COMMON_URLS['bogus'][0]):
+    return test_url(domain, '.well-known/nodeinfo')
+  return False
 
 def test_ninfo2(domain):
-  return test_url(domain, '.well-known/x-nodeinfo2')
+  if not test_url(domain, COMMON_URLS['bogus'][0]):
+    return test_url(domain, '.well-known/x-nodeinfo2')
+  return False
 
-# Return True if we can fetch passed URL from domain
+# Return True if we can fetch passed relative link from domain
 # Returns False on any failure to fetch
-def test_url(domain, url):
-  s = 'https://' + domain + '/' + url
+def test_url(domain, rel):
+  s = 'https://' + domain + '/' + rel
 
   try:
     req = urllib.request.Request(s, headers=HTTP_HDR)
@@ -296,8 +303,8 @@ def test_url(domain, url):
 # Returns True if any common URL can be fetched from domain
 # If we fetch none of the URLs, but we only get http client errors, return True
 def test_https(domain):
-  for url in COMMON_URLS['https']:
-    s = 'https://' + domain + '/' + url
+  for rel in COMMON_URLS['https']:
+    s = 'https://' + domain + '/' + rel
 
     try:
       req = urllib.request.Request(s, headers=HTTP_HDR)
@@ -333,16 +340,16 @@ def cat_schema_sw_name(domain):
   try:
     schemas = fetch_url('https://' + domain + '/.well-known/nodeinfo')
   except RuntimeError as e:
-    debug('cat_schema_sw_name:' + domain + ' ' + str(e))
+    debug('cat_schema_sw_name:' + domain + ' schemas.RuntimeError:' + str(e))
     return None
 
   try:
     j_schemas = json.loads(schemas)
   except json.JSONDecodeError as e:
-    debug('cat_schema_sw_name:' + domain + ' ' + str(e))
+    debug('cat_schema_sw_name:' + domain + ' schemas.JSONDecodeError:' + str(e))
     return None
 
-  # Be super careful when reading, so many ways for this to break
+  # Be super careful when reading, many ways for this to break
   if 'links' in j_schemas:
     if isinstance(j_schemas['links'], list):
       if len(j_schemas['links']) > 0:
@@ -350,26 +357,26 @@ def cat_schema_sw_name(domain):
           try:
             nodeinfo = fetch_url(j_schemas['links'][-1]['href'])
           except RuntimeError as e:
-            debug('cat_schema_sw_name:' + domain + ' ' + str(e))
+            debug('cat_schema_sw_name:' + domain + ' nodeinfo.RuntimeError:' + str(e))
             return None
 
           try:
             j_nodeinfo = json.loads(nodeinfo)
           except json.JSONDecodeError as e:
-            debug('cat_schema_sw_name:' + domain + ' ' + str(e))
+            debug('cat_schema_sw_name:' + domain + ' nodeinfo.JSONDecodeError' + str(e))
             return None
 
           if 'software' in j_nodeinfo:
             if 'name' in j_nodeinfo['software']:
-              return j_nodeinfo['software']['name']
+              return j_nodeinfo['software']['name'].lower()
 
   return None
 
 # Categorize based on URLs common to different instance implementations
 def cat_url(domain):
-  for implementation,urls in COMMON_URLS.items():
-    for url in urls:
-      s = 'https://' + domain + '/' + url
+  for implementation,rels in COMMON_URLS.items():
+    for rel in rels:
+      s = 'https://' + domain + '/' + rel
 
       try:
         req = urllib.request.Request(s, headers=HTTP_HDR)
@@ -407,15 +414,15 @@ def cat_ndots(domain):
 # BEGIN EXECUTION #
 ###################
 
-ap = argparse.ArgumentParser(description = 'Perform ordered tests on Fediverse instances. Order of tests is always r,d,4,6,n,n2,s. Output instances that pass all given tests.')
+ap = argparse.ArgumentParser(description = 'Perform ordered tests on Fediverse instances. Order of tests is always r,d,4,6,s,n,n2. Output instances that pass all given tests.')
 
 ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
 ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with DS RR in parent. No validation performed.')
 ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
 ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
+ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances running an HTTPS service, somewhat guesswork.')
 ap.add_argument('-n', '--node-info', dest='ninfo', action='store_true', default=False, help='Output instances hosting /.well-known/nodeinfo files')
 ap.add_argument('-n2', '--node-info2', dest='ninfo2', action='store_true', default=False, help='Output instances hosting /.well-known/x-nodeinfo2 files')
-ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances running an HTTPS service, somewhat guesswork.')
 
 ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Test everything')
 ap.add_argument('-g', '--debug', dest='debug', action='store_true', default=False, help='Enable debug mode, LOTS of output')
@@ -507,6 +514,11 @@ if args.ping6 or args.all:
     instances = perform_test(test_ping6, instances)
     verbose('Passed ping-ipv6:' + str(len(instances)))
 
+if args.https or args.all:
+  verbose('Testing https:' + str(len(instances)))
+  instances = perform_test(test_https, instances)
+  verbose('Passed https:' + str(len(instances)))
+
 if args.ninfo or args.all:
   verbose('Testing node-info:' + str(len(instances)))
   instances = perform_test(test_ninfo, instances)
@@ -516,11 +528,6 @@ if args.ninfo2 or args.all:
   verbose('Testing node-info2:' + str(len(instances)))
   instances = perform_test(test_ninfo2, instances)
   verbose('Passed node-info2:' + str(len(instances)))
-
-if args.https or args.all:
-  verbose('Testing https:' + str(len(instances)))
-  instances = perform_test(test_https, instances)
-  verbose('Passed https:' + str(len(instances)))
 
 if not args.totals:
   if args.outfile:
