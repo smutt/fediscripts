@@ -6,9 +6,11 @@ import argparse
 import collections
 import dns.exception
 import dns.resolver
+import json
 import math
 import os
 import multiprocessing.pool
+import resource
 import socket
 import subprocess
 import sys
@@ -28,6 +30,7 @@ MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
 HTTPS_TIMEOUT = 10 # Timeout value for connections in seconds
 
 # Common relative URIs that different implementations respond on with their default installs
+# Only 'https' should contain URLs common to multiple implementations
 # Each entry in dict is a list
 COMMON_URLS = collections.OrderedDict()
 COMMON_URLS['bogus'] = ['no_one_would_ever_use_this_url_in_real_life']
@@ -36,7 +39,7 @@ COMMON_URLS['pleroma'] = ['main/all', 'main/public', 'relay']
 COMMON_URLS['friendica'] = ['login']
 COMMON_URLS['peertube'] = ['videos/local']
 COMMON_URLS['multiple'] = ['about', '@admin']
-COMMON_URLS['https'] = ['robots.txt', '', 'index.html', 'index.htm']
+COMMON_URLS['https'] = ['robots.txt', '', 'index.html', 'index.htm', '.well-known/nodeinfo', '.well-known/x-nodeinfo2']
 # COMMON_URLS['misskey'] = [] # This one is tough
 
 HTTP_HDR = {}
@@ -47,9 +50,9 @@ HTTP_HDR['Accept-Encoding'] = 'none'
 HTTP_HDR['Accept-Language'] = 'en-US,en;q=0.8'
 HTTP_HDR['Connection'] = 'keep-alive'
 
-#############
-# FUNCTIONS #
-#############
+#####################
+# GENERAL FUNCTIONS #
+#####################
 
 # Only print string s if args.verbose is True
 def verbose(s):
@@ -96,7 +99,7 @@ def dns_query(name, dtype):
 # Test is a function that returns True/False
 # Return list of instances that passed
 def perform_test(test, instances):
-  if len(instances) < 5:
+  if len(instances) < MIN_THREADS * 2:
     results = []
     for ii in range(len(instances)):
       results.append(test(instances[ii].domain))
@@ -116,6 +119,80 @@ def perform_test(test, instances):
       instances[ii] = None
 
   return [ins for ins in instances if ins]
+
+# Perform categorization on passed list of instances
+# cat is a function that categorizes instance and returns a String
+# if cat returns None instance receives a category of 'Other'
+# Return OrderedDict of categories and the number of instances in each
+def perform_cat(cat, instances):
+  if len(instances) < MIN_THREADS * 2:
+    results = []
+    for ii in range(len(instances)):
+      results.append(cat(instances[ii].domain))
+  else:
+    thread_count = max(MIN_THREADS, min(MAX_THREADS, math.ceil(len(instances) / 2)))
+    verbose("thread_count:" + str(thread_count))
+    pool = multiprocessing.pool.ThreadPool(processes=thread_count)
+    results = pool.map(cat, [ins.domain for ins in instances])
+
+  # This should never happen, defensive programming
+  if len(instances) != len(results):
+    print("Unknown fatal categorization error")
+    exit(1)
+
+  results = ['other' if not x else x for x in results]
+
+  sums = {}
+  for res in results:
+    if res in sums:
+      sums[res] += 1
+    else:
+      sums[res] = 1
+
+  # Sort sums
+  rv =  collections.OrderedDict()
+  largest_key = list(sums)[0]
+  largest_value = sums[largest_key]
+  for ii in range(len(sums)):
+    for key,value in sums.items():
+      if value > largest_value:
+        largest_key = key
+        largest_value = value
+    rv[largest_key] = sums.pop(largest_key)
+    largest_value = 0
+  return rv
+
+# Fetch a URL and return its contents as a string, assumes an HTTP(S) URL
+# Raises a chained exception if something bad happens
+def fetch_url(url):
+
+  # Ensure passed URL is a valid URL
+  try:
+    urllib.parse.urlparse(url)
+  except ValueError as e:
+    debug('fetch_url:' + url + ' bad URL ' + str(e))
+    raise RuntimeError('fetch_url.BadURL') from e
+
+  try:
+    req = urllib.request.Request(url, headers=HTTP_HDR)
+    with urllib.request.urlopen(req) as page:
+      return page.read().decode('utf-8', 'strict')
+  except urllib.error.HTTPError as e:
+    debug('fetch_url:' + url + ' HTTPError:' + str(e.getcode()))
+    raise RuntimeError('fetch_url.HTTPError') from e
+  except urllib.error.URLError as e:
+    if isinstance(e.reason, socket.timeout):
+      debug('fetch_url:' + url + ' socket_timeout')
+      raise RuntimeError('fetch_url.socket_timeout') from e
+    else:
+      debug('fetch_url:' + url + ' URLError:' + str(e))
+      raise RuntimeError('fetch_url.URLError') from e
+  except UnicodeError as e:
+    debug('fetch_url:' + url + ' UnicodeError:' + str(e))
+    raise RuntimeError('fetch_url.UnicodeError') from e
+  except:
+    debug('fetch_url:' + url + ' GenFail')
+    raise RuntimeError('fetch_url.GenError') from None
 
 ##################
 # TEST FUNCTIONS #
@@ -243,35 +320,88 @@ def test_https(domain):
     else:
       debug('test_https:' + s + " Success")
       return True
+
+  debug('test_url:' + s + ' DefaultSuccess')
   return True
 
-# Attempt to categorize based on URLs common to different instance implementations
-def cat_urls(domain):
+#################
+# CAT FUNCTIONS #
+#################
+
+# Categorize based on advertised schemas
+def cat_schema_sw_name(domain):
+  try:
+    schemas = fetch_url('https://' + domain + '/.well-known/nodeinfo')
+  except RuntimeError as e:
+    debug('cat_schema_sw_name:' + domain + ' ' + str(e))
+    return None
+
+  try:
+    j_schemas = json.loads(schemas)
+  except json.JSONDecodeError as e:
+    debug('cat_schema_sw_name:' + domain + ' ' + str(e))
+    return None
+
+  # Be super careful when reading, so many ways for this to break
+  if 'links' in j_schemas:
+    if isinstance(j_schemas['links'], list):
+      if len(j_schemas['links']) > 0:
+        if 'href' in j_schemas['links'][-1]:
+          try:
+            nodeinfo = fetch_url(j_schemas['links'][-1]['href'])
+          except RuntimeError as e:
+            debug('cat_schema_sw_name:' + domain + ' ' + str(e))
+            return None
+
+          try:
+            j_nodeinfo = json.loads(nodeinfo)
+          except json.JSONDecodeError as e:
+            debug('cat_schema_sw_name:' + domain + ' ' + str(e))
+            return None
+
+          if 'software' in j_nodeinfo:
+            if 'name' in j_nodeinfo['software']:
+              return j_nodeinfo['software']['name']
+
+  return None
+
+# Categorize based on URLs common to different instance implementations
+def cat_url(domain):
   for implementation,urls in COMMON_URLS.items():
     for url in urls:
+      s = 'https://' + domain + '/' + url
+
       try:
-        urllib.request.urlopen('https://' + domain + '/' + url, timeout=HTTPS_TIMEOUT)
+        req = urllib.request.Request(s, headers=HTTP_HDR)
+        urllib.request.urlopen(req)
       except urllib.error.HTTPError as e:
-        if e.getcode() >= 400 and e.getcode() < 500:
+        if isinstance(e.reason, socket.timeout):
+          debug('cat_url:' + s + ' socket_timeout')
+          return None
+        elif e.getcode() >= 400 and e.getcode() < 500:
           continue
         else:
-          debug(domain + " HTTPS HTTPError:" + str(e.getcode()))
-          return False
+          debug('cat_url:' + s + ' HTTPError:' + str(e.getcode()))
+          return None
       except urllib.error.URLError as e:
-        debug(domain + " HTTPS URLError:" + str(e))
-        return False
+        debug('cat_url:' + s + ' URLError:' + str(e) + ' ' + str(e.args))
+        return None
       except:
-        debug(domain + " HTTPS GenError")
-        return False
+        debug('cat_url:' + s + ' GenError')
+        return None
       else:
-        debug(domain + " Found:" + implementation)
-        if implementation == 'bogus':
-          return False
+        debug('cat_url:' + s + ' Found:' + implementation)
+        if implementation == 'bogus' or implementation == 'https':
+          return None
         else:
-          return True
+          return implementation
 
-  debug(domain + " No instance or unknown instance type")
-  return False
+  debug('cat_url:' + domain + ' None')
+  return None
+
+# Categorize based on how many dots in the domain
+def cat_ndots(domain):
+  return str(domain.count('.'))
 
 ###################
 # BEGIN EXECUTION #
@@ -285,7 +415,7 @@ ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=
 ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
 ap.add_argument('-n', '--node-info', dest='ninfo', action='store_true', default=False, help='Output instances hosting /.well-known/nodeinfo files')
 ap.add_argument('-n2', '--node-info2', dest='ninfo2', action='store_true', default=False, help='Output instances hosting /.well-known/x-nodeinfo2 files')
-ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances listening on TCP port 443')
+ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances running an HTTPS service, somewhat guesswork.')
 
 ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Test everything')
 ap.add_argument('-g', '--debug', dest='debug', action='store_true', default=False, help='Enable debug mode, LOTS of output')
@@ -296,11 +426,11 @@ ap.add_argument('-m', '--min-hits', dest='minhits', type=int, default=None, help
 input_group = ap.add_mutually_exclusive_group()
 input_group.add_argument('instance', nargs='?', type=str, help='Domains under test')
 input_group.add_argument('-i', '--input-file', dest='infile', type=str, help='Consolidated list of hosts input file')
-output_group = ap.add_mutually_exclusive_group()
-output_group.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
-output_group.add_argument('-cu', '--cat-url', dest='caturl', action='store_true', default=False, help='Attempt to guess implementation type by reachable common URLs. Overrides output-file.')
-output_group.add_argument('-cs', '--cat-schema', dest='catschema', action='store_true', default=False, help='Categorize by schema advertised in /.well-known/nodeinfo. Overrides output-file.')
 
+ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
+ap.add_argument('-cd', '--cat-ndots', dest='catndots', action='store_true', default=False, help='Categorize by number of dots in the domain.')
+ap.add_argument('-cn', '--cat-name', dest='catname', action='store_true', default=False, help='Categorize by software name shown in /.well-known/nodeinfo. Overrides output-file.')
+ap.add_argument('-cu', '--cat-url', dest='caturl', action='store_true', default=False, help='Categorize by guessing implementation type by fetchable common URLs. Overrides output-file. Broken.')
 args = ap.parse_args()
 
 if args.totals:
@@ -336,6 +466,10 @@ else:
 if len(instances) == 0:
   print("Error: No instances for testing")
   exit(1)
+
+# Set max number of open files for system
+_,nofiles_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (nofiles_hard,nofiles_hard))
 
 # Set timeout for all connections
 # This SHOULD work according to this, https://docs.python.org/3/howto/urllib2.html
@@ -397,3 +531,13 @@ if not args.totals:
   else:
     for ins in instances:
       print(repr(ins))
+
+if args.catndots:
+  for cat,tot in perform_cat(cat_ndots, instances).items():
+    print('cat-ndots:' + cat + ':' + str(tot))
+if args.catname:
+  for cat,tot in perform_cat(cat_schema_sw_name, instances).items():
+    print('cat-name:' + cat + ':' + str(tot))
+if args.caturl:
+  for cat,tot in perform_cat(cat_url, instances).items():
+    print('cat-url:' + cat + ':' + str(tot))
