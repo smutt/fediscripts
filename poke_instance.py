@@ -190,13 +190,63 @@ def fetch_url(url, retries=3):
     else:
       debug('fetch_url:' + url + ' URLError:' + str(e) + ' Retrying')
       #raise RuntimeError('fetch_url.URLError') from e
-    return fetch_url(url, retries-1)
+    return fetch_url(url, retries-1) # TODO: Consider sleeping a bit before retrying
   except UnicodeError as e:
     debug('fetch_url:' + url + ' UnicodeError:' + str(e))
     raise RuntimeError('fetch_url.UnicodeError') from e
   except:
     debug('fetch_url:' + url + ' GenFail')
     raise RuntimeError('fetch_url.GenError') from None
+
+# Fetch an attribute from a nodeinfo schema
+# Takes a domain and an attr, attr is a list of keys in descending order representing the requested attribute
+# String keys assume dicts, while int keys assume lists
+# Returns attribute or None if it does not exist
+def fetch_nodeinfo_attr(domain, attr):
+  try:
+    schemas = fetch_url('https://' + domain + '/.well-known/nodeinfo')
+  except RuntimeError as e:
+    debug('fetch_nodeinfo_attr:' + domain + ' schemas.RuntimeError:' + str(e))
+    return None
+
+  try:
+    j_schemas = json.loads(schemas)
+  except json.JSONDecodeError as e:
+    debug('fetch_nodeinfo_attr:' + domain + ' schemas.JSONDecodeError:' + str(e))
+    return None
+
+  if 'links' in j_schemas:
+    if isinstance(j_schemas['links'], list):
+      if len(j_schemas['links']) > 0:
+        if 'href' in j_schemas['links'][-1]:
+          try:
+            nodeinfo = fetch_url(j_schemas['links'][-1]['href'])
+          except RuntimeError as e:
+            debug('fetch_nodeinfo_attr:' + domain + ' nodeinfo.RuntimeError:' + str(e))
+            return None
+
+          try:
+            j_nodeinfo = json.loads(nodeinfo)
+          except json.JSONDecodeError as e:
+            debug('fetch_nodeinfo_attr:' + domain + ' nodeinfo.JSONDecodeError' + str(e))
+            return None
+
+          active_stem = j_nodeinfo
+          for key in attr:
+            if isinstance(key, int): # Caller expects a list here
+              if len(active_stem) > key:
+                active_stem = active_stem[key]
+              else:
+                debug('fetch_nodeinfo_attr:' + domain + ' invalid index:' + str(key))
+                return None
+            elif isinstance(key, str): # Caller expects a dict here
+              if key in active_stem:
+                active_stem = active_stem[key]
+              else:
+                debug('fetch_nodeinfo_attr:' + domain + ' invalid key:' + key)
+                return None
+          return active_stem
+  return None
 
 ##################
 # TEST FUNCTIONS #
@@ -274,8 +324,9 @@ def test_ninfo2(domain):
   return test_url(domain, '.well-known/x-nodeinfo2', 'json')
 
 # Return True if we can fetch headers of passed relative link from domain
-# Returns False on any failure to fetch
-# if passed, string content_type must be present in response content_type
+# if string content_type is passed, it must be present in response content_type
+# Returns False on any failure to fetch or if content_type doesn't match
+# TODO: Consider adding retries on connection failures
 def test_url(domain, rel, content_type=None):
   s = 'https://' + domain + '/' + rel
 
@@ -348,8 +399,6 @@ def test_url(domain, rel, content_type=None):
     return True
   '''
 
-
-
 # Returns True if any common URL can be fetched from domain
 # If we fetch none of the URLs, but we only get http client errors, return True
 def test_https(domain):
@@ -385,44 +434,12 @@ def test_https(domain):
 # CAT FUNCTIONS #
 #################
 
-# Categorize based on advertised schemas
+# Categorize based on software name in nodeinfo
 def cat_schema_sw_name(domain):
-  try:
-    schemas = fetch_url('https://' + domain + '/.well-known/nodeinfo')
-  except RuntimeError as e:
-    debug('cat_schema_sw_name:' + domain + ' schemas.RuntimeError:' + str(e))
-    return None
-
-  try:
-    j_schemas = json.loads(schemas)
-  except json.JSONDecodeError as e:
-    debug('cat_schema_sw_name:' + domain + ' schemas.JSONDecodeError:' + str(e))
-    return None
-
-  # Be super careful when reading, many ways for this to break
-  if 'links' in j_schemas:
-    if isinstance(j_schemas['links'], list):
-      if len(j_schemas['links']) > 0:
-        if 'href' in j_schemas['links'][-1]:
-          try:
-            nodeinfo = fetch_url(j_schemas['links'][-1]['href'])
-          except RuntimeError as e:
-            debug('cat_schema_sw_name:' + domain + ' nodeinfo.RuntimeError:' + str(e))
-            return None
-
-          try:
-            j_nodeinfo = json.loads(nodeinfo)
-          except json.JSONDecodeError as e:
-            debug('cat_schema_sw_name:' + domain + ' nodeinfo.JSONDecodeError' + str(e))
-            return None
-
-          if 'software' in j_nodeinfo:
-            if 'name' in j_nodeinfo['software']:
-              return j_nodeinfo['software']['name'].lower()
-
-  return None
+  return fetch_nodeinfo_attr(domain, ['software', 'name'])
 
 # Categorize based on URLs common to different instance implementations
+# This doesn't really work and never really will
 def cat_url(domain):
   for implementation,rels in COMMON_URLS.items():
     for rel in rels:
