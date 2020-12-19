@@ -6,10 +6,11 @@ import argparse
 import collections
 import dns.exception
 import dns.resolver
+import http.client
 import json
 import math
-import os
 import multiprocessing.pool
+import os
 import resource
 import socket
 import subprocess
@@ -267,23 +268,27 @@ def test_ping(domain, binary):
   return True
 
 def test_ninfo(domain):
-  if not test_url(domain, COMMON_URLS['bogus'][0]):
-    return test_url(domain, '.well-known/nodeinfo')
-  return False
+  return test_url(domain, '.well-known/nodeinfo', 'json')
 
 def test_ninfo2(domain):
-  if not test_url(domain, COMMON_URLS['bogus'][0]):
-    return test_url(domain, '.well-known/x-nodeinfo2')
-  return False
+  return test_url(domain, '.well-known/x-nodeinfo2', 'json')
 
-# Return True if we can fetch passed relative link from domain
+# Return True if we can fetch headers of passed relative link from domain
 # Returns False on any failure to fetch
-def test_url(domain, rel):
+# if passed, string content_type must be present in response content_type
+def test_url(domain, rel, content_type=None):
   s = 'https://' + domain + '/' + rel
 
   try:
     req = urllib.request.Request(s, headers=HTTP_HDR)
-    urllib.request.urlopen(req)
+    with urllib.request.urlopen(req) as page:
+      if content_type:
+        page_c_type = page.getheader('content-type')
+        if page_c_type:
+          if content_type in page_c_type:
+            return True
+        debug('test_url:' + s + ' BadHTTPContent-type')
+        return False
   except urllib.error.HTTPError as e:
     debug('test_url:' + s + " HTTPError:" + str(e.getcode()))
     return False
@@ -299,6 +304,51 @@ def test_url(domain, rel):
   else:
     debug('test_url:' + s + ' Success')
     return True
+
+  ''' This code proved incompatible with multiprocessing
+  lesson => do not use the requests library with multiprocessing
+  try:
+    resp = requests.head(s, headers=HTTP_HDR, timeout=HTTPS_TIMEOUT)
+  except requests.ConnectionError as e:
+    debug('test_url:' + s + ' ConnectionError')# + repr(e))
+    return False
+  except requests.HTTPError as e:
+    debug('test_url:' + s + ' HTTPError')# + str(e))
+    return False
+  except requests.URLRequired as e:
+    debug('test_url:' + s + ' BadURL')# + str(e))
+    return False
+  except requests.TooManyRedirects as e:
+    debug('test_url:' + s + ' TooManyRedirects')# + str(e))
+    return False
+  except requests.ConnectTimeout as e:
+    debug('test_url:' + s + ' ConnectTimeout')# + str(e))
+    return False
+  except requests.ReadTimeout as e:
+    debug('test_url:' + s + ' ServerReadTimeout')# + str(e))
+    return False
+  except requests.RequestException as e:
+    debug('test_url:' + s + ' RequestException')# + str(e))
+    return False
+  except:
+    debug('test_url:' + s + ' GenFail')
+    return False
+  else:
+    if not resp.ok:
+      debug('test_url:' + s + ' ' + resp.reason)
+      return False
+
+    if content_type:
+      if 'content-type' not in resp.headers:
+        debug('test_url:' + s + ' content_type not present in HTTP headers')
+        return False
+      if content_type.lower() not in resp.headers['content-type'].lower():
+        debug('test_url:' + s + ' wrong content_type in HTTP headers')
+        return False
+    return True
+  '''
+
+
 
 # Returns True if any common URL can be fetched from domain
 # If we fetch none of the URLs, but we only get http client errors, return True
