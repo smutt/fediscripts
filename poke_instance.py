@@ -29,6 +29,7 @@ IPV6_TEST_ADDY = '2001:500:9f::42' # just need an IPv6 address that will always 
 MAX_THREADS = 1000 # Max number of threads for the multiprocessing pool, bad things happen if this goes bigger than 1000
 MIN_THREADS = 2 # Min number of threads for the multiprocessing pool
 HTTPS_TIMEOUT = 10 # Timeout value for connections in seconds
+HTTPS_RETRIES = 3 # Number of attempts we make when testing or fetching HTTPS URLs
 
 # Common relative relative URLs that different implementations respond on with their default installs
 # Only 'https' should contain URLs common to multiple implementations
@@ -59,12 +60,18 @@ HTTP_HDR['Connection'] = 'keep-alive'
 # Only print string s if args.verbose is True
 def verbose(s):
   if args.verbose:
-    print(s)
+    try:
+      print(s, flush=True)
+    except IOError:
+      exit(1)
 
 # Only print string s if args.debug is True
 def debug(s):
   if args.debug:
-    print(s)
+    try:
+      print(s, flush=True)
+    except IOError:
+      exit(1)
 
 # Returns the location of an executable binary
 # Returns None if binary cannot be found
@@ -165,7 +172,7 @@ def perform_cat(cat, instances):
 # Fetch a URL and return its contents as a string, assumes an HTTP(S) URL
 # Will retry for retries in cases of network errors
 # Raises RuntimeError if something bad happens
-def fetch_url(url, retries=3):
+def fetch_url(url, retries=HTTPS_RETRIES):
   if retries == 0:
     raise RuntimeError('fetch_url.retries_exhausted') from None
 
@@ -190,7 +197,7 @@ def fetch_url(url, retries=3):
     else:
       debug('fetch_url:' + url + ' URLError:' + str(e) + ' Retrying')
       #raise RuntimeError('fetch_url.URLError') from e
-    return fetch_url(url, retries-1) # TODO: Consider sleeping a bit before retrying
+    return fetch_url(url, retries-1)
   except UnicodeError as e:
     debug('fetch_url:' + url + ' UnicodeError:' + str(e))
     raise RuntimeError('fetch_url.UnicodeError') from e
@@ -324,11 +331,15 @@ def test_ninfo2(domain):
   return test_url(domain, '.well-known/x-nodeinfo2', 'json')
 
 # Return True if we can fetch headers of passed relative link from domain
-# if string content_type is passed, it must be present in response content_type
-# Returns False on any failure to fetch or if content_type doesn't match
-# TODO: Consider adding retries on connection failures
-def test_url(domain, rel, content_type=None):
+# if string content_type is passed, it must be present in response content-type
+# Returns False on any failure to fetch, or if content_type doesn't match HTTP content-type
+# Retries on connection failure
+def test_url(domain, rel, content_type=None, retries=HTTPS_RETRIES):
   s = 'https://' + domain + '/' + rel
+
+  if retries == 0:
+    debug('test_url:' + s + ' retries.exhausted')
+    return False
 
   try:
     req = urllib.request.Request(s, headers=HTTP_HDR)
@@ -345,10 +356,10 @@ def test_url(domain, rel, content_type=None):
     return False
   except urllib.error.URLError as e:
     if isinstance(e.reason, socket.timeout):
-      debug('test_url:' + s + ' socket_timeout')
+      debug('test_url:' + s + ' socket_timeout Retrying')
     else:
-      debug('test_url:' + s + " URLError:" + str(e))
-    return False
+      debug('test_url:' + s + " URLError:" + str(e) + ' Retrying')
+    return test_url(domain, rel, content_type, retries-1)
   except:
     debug('test_url:' + s + ' GenFail')
     return False
@@ -481,8 +492,24 @@ def cat_ndots(domain):
 # BEGIN EXECUTION #
 ###################
 
-ap = argparse.ArgumentParser(description = 'Perform ordered tests on Fediverse instances. Order of tests is always r,d,4,6,s,n,n2. Output instances that pass all given tests.')
+ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
+                               description =
+                               'Perform ordered tests on Fediverse instances. Output instances that pass all given tests.',
+                               epilog =
+'''
+<Test execution order>
+dns-resolve -> dnssec -> ping-ipv4 -> ping-ipv6 -> https -> node-info -> node-info2
 
+<Available categorization methods>
+local-posts -> Categorize by number of local posts shown in nodeinfo.
+ndots -> Categorize by number of dots in the domain.
+software -> Categorize by software name shown in nodeinfo.
+url -> {Experimental} Categorize by guessing implementation type by fetchable common URLs.
+users-total -> Categorize by total users shown in nodeinfo.
+users-active-monthly -> Categorize by monthly active users shown in nodeinfo.
+users-active-yearly -> Categorize by yearly active users shown in nodeinfo.
+'''
+                               )
 ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
 ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with DS RR in parent. No validation performed.')
 ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
@@ -498,13 +525,11 @@ ap.add_argument('-v', '--verbose', dest='verbose', action='store_true', default=
 ap.add_argument('-m', '--min-hits', dest='minhits', type=int, default=None, help='Only test instances with hits >= MINHITS. Requires input-file.')
 
 input_group = ap.add_mutually_exclusive_group()
-input_group.add_argument('instance', nargs='?', type=str, help='Domains under test')
+input_group.add_argument('instance', metavar='INSTANCE', nargs='?', type=str, help='Test a single instance')
 input_group.add_argument('-i', '--input-file', dest='infile', type=str, help='Consolidated list of hosts input file')
 
-ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update, overrides stdout')
-ap.add_argument('-cd', '--cat-ndots', dest='catndots', action='store_true', default=False, help='Categorize by number of dots in the domain.')
-ap.add_argument('-cn', '--cat-name', dest='catname', action='store_true', default=False, help='Categorize by software name shown in /.well-known/nodeinfo. Overrides output-file.')
-ap.add_argument('-cu', '--cat-url', dest='caturl', action='store_true', default=False, help='Categorize by guessing implementation type by fetchable common URLs. Overrides output-file. Broken.')
+ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update. Overrides stdout.')
+ap.add_argument('-c', '--categorize', metavar='METHOD', dest='cat', nargs='+', help='Categorize passing instances by one or more qualifiers. Overrides output-file.')
 args = ap.parse_args()
 
 if args.totals:
@@ -606,12 +631,13 @@ if not args.totals:
     for ins in instances:
       print(repr(ins))
 
-if args.catndots:
-  for cat,tot in perform_cat(cat_ndots, instances).items():
-    print('cat-ndots:' + cat + ':' + str(tot))
-if args.catname:
-  for cat,tot in perform_cat(cat_schema_sw_name, instances).items():
-    print('cat-name:' + cat + ':' + str(tot))
-if args.caturl:
-  for cat,tot in perform_cat(cat_url, instances).items():
-    print('cat-url:' + cat + ':' + str(tot))
+if args.cat:
+  if 'ndots' in args.cat:
+    for cat,tot in perform_cat(cat_ndots, instances).items():
+      print('cat-ndots:' + cat + ':' + str(tot))
+  if 'software' in args.cat:
+    for cat,tot in perform_cat(cat_schema_sw_name, instances).items():
+      print('cat-name:' + cat + ':' + str(tot))
+  if 'url' in args.cat:
+    for cat,tot in perform_cat(cat_url, instances).items():
+      print('cat-url:' + cat + ':' + str(tot))
