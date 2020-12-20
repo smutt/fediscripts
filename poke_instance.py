@@ -45,13 +45,21 @@ COMMON_URLS['multiple'] = ['about', '@admin']
 COMMON_URLS['https'] = ['robots.txt', '', 'index.html', 'index.htm', '.well-known/nodeinfo', '.well-known/x-nodeinfo2']
 # COMMON_URLS['misskey'] = [] # This one is tough
 
-HTTP_HDR = {}
+HTTP_HDR = {} # Headers sent with HTTPS requests
 HTTP_HDR['User-Agent'] = 'https://github.com/smutt/fediscripts'
 HTTP_HDR['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 HTTP_HDR['Accept-Charset'] = 'ISO-8859-1,utf-8;q=0.7,*;q=0.3'
 HTTP_HDR['Accept-Encoding'] = 'none'
 HTTP_HDR['Accept-Language'] = 'en-US,en;q=0.8'
 HTTP_HDR['Connection'] = 'keep-alive'
+
+USER_CATS = collections.OrderedDict() # A mapping users categories for instances to their display strings
+USER_CATS[100] = '0-100'
+USER_CATS[500] = '101-500'
+USER_CATS[1000] = '501-1k'
+USER_CATS[5000] = '1001-5k'
+USER_CATS[10000] = '5001-10k'
+USER_CATS[sys.maxsize] = '>10k'
 
 #####################
 # GENERAL FUNCTIONS #
@@ -149,10 +157,12 @@ def perform_cat(cat, instances):
     print("Unknown fatal categorization error")
     exit(1)
 
-  results = ['other' if not x else x for x in results]
+  results = ['Other' if not x else x for x in results]
 
   sums = {}
+  total = 0
   for res in results:
+    total += 1
     if res in sums:
       sums[res] += 1
     else:
@@ -160,6 +170,7 @@ def perform_cat(cat, instances):
 
   # Sort sums
   rv = collections.OrderedDict()
+  rv['Total'] = total
   for ii in range(len(sums)):
     largest = list(sums)[0]
     for key,value in sums.items():
@@ -225,7 +236,7 @@ def fetch_nodeinfo_attr(domain, attr):
   if 'links' in j_schemas:
     if isinstance(j_schemas['links'], list):
       if len(j_schemas['links']) > 0:
-        if 'href' in j_schemas['links'][-1]:
+        if 'href' in j_schemas['links'][-1]: # nodeinfo standard says to always take the last one
           try:
             nodeinfo = fetch_url(j_schemas['links'][-1]['href'])
           except RuntimeError as e:
@@ -244,13 +255,13 @@ def fetch_nodeinfo_attr(domain, attr):
               if len(active_stem) > key:
                 active_stem = active_stem[key]
               else:
-                debug('fetch_nodeinfo_attr:' + domain + ' invalid index:' + str(key))
+                debug('fetch_nodeinfo_attr:' + domain + ' invalidIndex:' + str(key))
                 return None
             elif isinstance(key, str): # Caller expects a dict here
               if key in active_stem:
                 active_stem = active_stem[key]
               else:
-                debug('fetch_nodeinfo_attr:' + domain + ' invalid key:' + key)
+                debug('fetch_nodeinfo_attr:' + domain + ' invalidKey:' + key)
                 return None
           return active_stem
   return None
@@ -445,8 +456,70 @@ def test_https(domain):
 # CAT FUNCTIONS #
 #################
 
+# Categorize based on number of local posts in nodeinfo
+def cat_local_posts(domain):
+  local_posts = fetch_nodeinfo_attr(domain, ['usage', 'localPosts'])
+  if not isinstance(local_posts, int):
+    debug('cat_local_posts:' + domain + ' invalidData.not_int')
+    return None
+  if local_posts < 0:
+    debug('cat_local_posts:' + domain + ' invalidData.neg_int')
+    return None
+
+  if local_posts < 1000:
+    return '0-1k'
+  if local_posts < 10000:
+    return '1k-10k'
+  if local_posts < 100000:
+    return '10k-100k'
+  if local_posts < 1000000:
+    return '100k-1m'
+  return '>1m'
+
+# Categorize based on total number of users
+def cat_users_total(domain):
+  users = fetch_nodeinfo_attr(domain, ['usage', 'users', 'total'])
+  if not isinstance(users, int):
+    debug('cat_users_total:' + domain + ' invalidData.not_int')
+    return None
+  if users < 0:
+    debug('cat_users_total:' + domain + ' invalidData.neg_int')
+    return None
+
+  for num,display in USER_CATS.items():
+    if users <= num:
+      return display
+
+# Categorize based on active monthly users
+def cat_users_active_month(domain):
+  users = fetch_nodeinfo_attr(domain, ['usage', 'users', 'activeMonth'])
+  if not isinstance(users, int):
+    debug('cat_users_active_month:' + domain + ' invalidData.not_int')
+    return None
+  if users < 0:
+    debug('cat_users_active_month:' + domain + ' invalidData.neg_int')
+    return None
+
+  for num,display in USER_CATS.items():
+    if users <= num:
+      return display
+
+# Categorize based on active half-yearly users
+def cat_users_active_halfyear(domain):
+  users = fetch_nodeinfo_attr(domain, ['usage', 'users', 'activeHalfyear'])
+  if not isinstance(users, int):
+    debug('cat_users_active_halfyear:' + domain + ' invalidData.not_int')
+    return None
+  if users < 0:
+    debug('cat_users_active_halfyear:' + domain + ' invalidData.neg_int')
+    return None
+
+  for num,display in USER_CATS.items():
+    if users <= num:
+      return display
+
 # Categorize based on software name in nodeinfo
-def cat_schema_sw_name(domain):
+def cat_software(domain):
   return fetch_nodeinfo_attr(domain, ['software', 'name'])
 
 # Categorize based on URLs common to different instance implementations
@@ -492,9 +565,19 @@ def cat_ndots(domain):
 # BEGIN EXECUTION #
 ###################
 
+# A mapping of categorization methods to their python functions
+# Must come after function definitions
+CAT_METHODS = {}
+CAT_METHODS['ndots'] = cat_ndots
+CAT_METHODS['software'] = cat_software
+CAT_METHODS['url'] = cat_url
+CAT_METHODS['local-posts'] = cat_local_posts
+CAT_METHODS['users-total'] = cat_users_total
+CAT_METHODS['users-active-month'] = cat_users_active_month
+CAT_METHODS['users-active-halfyear'] = cat_users_active_halfyear
+
 ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
-                               description =
-                               'Perform ordered tests on Fediverse instances. Output instances that pass all given tests.',
+                               description = 'Perform ordered tests on Fediverse instances. Output instances that pass all given tests.',
                                epilog =
 '''
 <Test execution order>
@@ -506,8 +589,8 @@ ndots -> Categorize by number of dots in the domain.
 software -> Categorize by software name shown in nodeinfo.
 url -> {Experimental} Categorize by guessing implementation type by fetchable common URLs.
 users-total -> Categorize by total users shown in nodeinfo.
-users-active-monthly -> Categorize by monthly active users shown in nodeinfo.
-users-active-yearly -> Categorize by yearly active users shown in nodeinfo.
+users-active-month -> Categorize by monthly active users shown in nodeinfo.
+users-active-halfyear -> Categorize by half-yearly active users shown in nodeinfo.
 '''
                                )
 ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
@@ -520,7 +603,7 @@ ap.add_argument('-n2', '--node-info2', dest='ninfo2', action='store_true', defau
 
 ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Test everything')
 ap.add_argument('-g', '--debug', dest='debug', action='store_true', default=False, help='Enable debug mode, LOTS of output')
-ap.add_argument('-t', '--totals', dest='totals', action='store_true', default=False, help='Print test passing totals only. Sets verbose and overrides output-file.')
+ap.add_argument('-t', '--totals', dest='totals', action='store_true', default=False, help='Print test passing totals and categorizations. Does not output consolidated instances. Sets verbose and overrides output-file.')
 ap.add_argument('-v', '--verbose', dest='verbose', action='store_true', default=False, help='Verbose output')
 ap.add_argument('-m', '--min-hits', dest='minhits', type=int, default=None, help='Only test instances with hits >= MINHITS. Requires input-file.')
 
@@ -632,12 +715,7 @@ if not args.totals:
       print(repr(ins))
 
 if args.cat:
-  if 'ndots' in args.cat:
-    for cat,tot in perform_cat(cat_ndots, instances).items():
-      print('cat-ndots:' + cat + ':' + str(tot))
-  if 'software' in args.cat:
-    for cat,tot in perform_cat(cat_schema_sw_name, instances).items():
-      print('cat-name:' + cat + ':' + str(tot))
-  if 'url' in args.cat:
-    for cat,tot in perform_cat(cat_url, instances).items():
-      print('cat-url:' + cat + ':' + str(tot))
+  for method,func in CAT_METHODS.items():
+    if method in args.cat:
+      for cat,tot in perform_cat(func, instances).items():
+        print(method + ':' + cat + ':' + str(tot))
