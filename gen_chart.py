@@ -7,7 +7,6 @@ import argparse
 import datetime
 import json
 import matplotlib
-matplotlib.use('agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import sys
@@ -24,7 +23,6 @@ def autolabel(bars):
 
 ap = argparse.ArgumentParser(description='Take JSON data on stdin and chart it')
 ap.add_argument('-o', '--output-file', default='gen_graph', dest='outfile', type=str, help='Name of output file without file extension')
-ap.add_argument('-l', '--legend', action='store_true', default=False, dest='legend', help='Include legend in outputted graphs')
 ap.add_argument('-t', '--threshold', metavar='THRESHOLD', default=0, type=int, dest='threshold', help='Do not include any value less than THRESHOLD')
 args = ap.parse_args()
 
@@ -74,7 +72,7 @@ width = 0.35  # the width of the bars
 fig, ax = plt.subplots()
 bar = ax.bar(x - width/2, data, width, label=title)
 
-# Add some text for labels, title and custom x-axis tick labels, etc.
+# Setup labels
 ax.set_ylabel('Num Instances')
 ax.set_title(title + ' for ' + str(total) + ' instances')
 ax.set_xticks(x)
