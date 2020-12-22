@@ -10,7 +10,7 @@ import os
 ###########
 
 class FediServer():
-  DOMAIN_CHARS = string.ascii_letters + string.digits + '-' + '.'
+  DOMAIN_CHARS = string.ascii_letters + string.digits + '-' + '.' # Valid characters in a DNS name
 
   def __init__(self, domain, first_seen, last_seen=None, hits=1):
     self.domain = self.confirm_domain(domain.lower().strip())

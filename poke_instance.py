@@ -122,7 +122,7 @@ def perform_test(test, instances):
       results.append(test(instances[ii].domain))
   else:
     thread_count = max(MIN_THREADS, min(MAX_THREADS, math.ceil(len(instances) / 2)))
-    verbose("thread_count:" + str(thread_count))
+    verbose("test_thread_count:" + str(thread_count))
     pool = multiprocessing.pool.ThreadPool(processes=thread_count)
     results = pool.map(test, [ins.domain for ins in instances])
 
@@ -148,7 +148,7 @@ def perform_cat(cat, instances):
       results.append(cat(instances[ii].domain))
   else:
     thread_count = max(MIN_THREADS, min(MAX_THREADS, math.ceil(len(instances) / 2)))
-    verbose("thread_count:" + str(thread_count))
+    verbose("cat_thread_count:" + str(thread_count))
     pool = multiprocessing.pool.ThreadPool(processes=thread_count)
     results = pool.map(cat, [ins.domain for ins in instances])
 
@@ -603,6 +603,7 @@ ap.add_argument('-n2', '--node-info2', dest='ninfo2', action='store_true', defau
 
 ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Test everything')
 ap.add_argument('-g', '--debug', dest='debug', action='store_true', default=False, help='Enable debug mode, LOTS of output')
+ap.add_argument('-j', '--json', dest='json', action='store_true', default=False, help='Output to JSON instead of CSV. Overrides output-file.')
 ap.add_argument('-t', '--totals', dest='totals', action='store_true', default=False, help='Print test passing totals and categorizations. Does not output consolidated instances. Sets verbose and overrides output-file.')
 ap.add_argument('-v', '--verbose', dest='verbose', action='store_true', default=False, help='Verbose output')
 ap.add_argument('-m', '--min-hits', dest='minhits', type=int, default=None, help='Only test instances with hits >= MINHITS. Requires input-file.')
@@ -626,6 +627,9 @@ if not args.all and not args.ping4 and not args.ping6 and not args.dnssec \
   and not args.ninfo and not args.ninfo2 and not args.https and not args.dns:
   print("No tests requested, exiting")
   exit(1)
+
+if args.cat or args.json or args.totals:
+  args.outfile = None
 
 # Build list of instances
 if args.instance:
@@ -710,6 +714,8 @@ if not args.totals:
     for ins in instances:
       dins[ins.domain] = ins
     fediserver.write_consolidated(args.outfile, dins)
+  elif args.json:
+    print(json.dumps([ins.__dict__ for ins in instances]))
   else:
     for ins in instances:
       print(repr(ins))
@@ -717,5 +723,8 @@ if not args.totals:
 if args.cat:
   for method,func in CAT_METHODS.items():
     if method in args.cat:
-      for cat,tot in perform_cat(func, instances).items():
-        print(method + ':' + cat + ':' + str(tot))
+      if args.json:
+        print(json.dumps({method:perform_cat(func, instances)}))
+      else:
+        for cat,tot in perform_cat(func, instances).items():
+          print(method + ':' + cat + ':' + str(tot))
