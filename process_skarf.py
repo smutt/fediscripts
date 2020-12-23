@@ -47,7 +47,7 @@ def parse_input(path):
 
 # BEGIN EXECUTION
 ap = argparse.ArgumentParser(description='Process skarfed output')
-ap.add_argument('-i', '--input-file', nargs='+', dest='infile', type=str, help='Input file(s). If more than 1 produce a diff between them')
+ap.add_argument('-i', '--input-file', nargs='+', dest='infile', type=str, help='Input file(s). If 2 files given produce a diff between them')
 ap.add_argument('-d', '--delimiter', type=str, default=',', dest='delimiter', help='Input delimiter')
 ap_group = ap.add_mutually_exclusive_group()
 ap_group.add_argument('-t', '--top', dest='top', type=int, help='Output sorted top talking domains only')
