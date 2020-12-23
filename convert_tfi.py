@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 
 # Copyright (C) 2020, Andrew McConachie, <andrew@depht.com>
+# This script converts hosts gathered via the GraphQL interface of the-federation.info/graphql into our CSV format
 
-#import sys
+# Generate hosts with this graphQL code:
+'''
+{ nodes{
+  host
+}
+}
+'''
+
 import os
 import argparse
 import json
@@ -10,7 +18,7 @@ import time
 import fediserver
 
 # BEGIN EXECUTION
-ap = argparse.ArgumentParser(description='Convert JSON hosts into our format')
+ap = argparse.ArgumentParser(description='Convert hosts from the-federation.info into our CSV format')
 ap.add_argument('-i', '--input-file', dest='infile', type=str, help='Input file')
 ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to write')
 args = ap.parse_args()
