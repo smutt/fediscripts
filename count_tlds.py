@@ -43,6 +43,7 @@ if args.exclude and not args.cat:
   exit(1)
 
 tlds = {}
+total = 0
 fh = open(args.infile, 'r')
 for line in fh.read().split('\n'):
   if len(line) == 0:
@@ -50,6 +51,7 @@ for line in fh.read().split('\n'):
   if line[0] == '#':
     continue
 
+  total += 1
   toks = line.split(',')
   tld = toks[0].split('.')[-1]
   if tld in tlds:
@@ -82,19 +84,21 @@ if args.cat:
       output[categories[tld]] = count
 
   if args.json:
-    print(json.dumps(output))
+    output['Total'] = total
+    print('{\"TLD-type\": ' + json.dumps(output) + '}')
   else:
     for category,count in output.items():
       print(category + ":" + str(count))
 
 else:
+  tlds['Total'] = total
   output = [TLDCount(k, v) for k,v in tlds.items()]
   output.sort(key=lambda x: x.count, reverse=True)
   if args.json:
-    ss = '{'
+    ss = '{\"TLD\": {'
     for tt in output:
       ss += tt.to_json() + ','
-    print(ss.rstrip(',') + '}')
+    print(ss.rstrip(',') + '}}')
   else:
     for tt in output:
       print(repr(tt))

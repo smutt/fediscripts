@@ -23,9 +23,10 @@ def autolabel(bars):
                   ha='center', va='bottom')
 
 ap = argparse.ArgumentParser(description='Take JSON data on stdin and chart it')
-ap.add_argument('-o', '--output-file', default='gen_graph', dest='outfile', type=str, help='Name of output file without file extension')
+ap.add_argument('-o', '--output-file', default='gen_chart', dest='outfile', type=str, help='Name of output file without file extension')
 ap.add_argument('-t', '--threshold', metavar='THRESHOLD', default=0, type=int, dest='threshold', help='Do not include any value less than THRESHOLD')
 ap.add_argument('--title', default=None, type=str, dest='title', help='Chart title. Otherwise taken from JSON input')
+ap.add_argument('--top', metavar='TOP', default=10, dest='top', type=int, help='Only chart the top TOP values')
 args = ap.parse_args()
 
 if sys.stdin.isatty():
@@ -79,9 +80,15 @@ if len(set_list) > 2:
 
 # The length of all lists must be the same
 ll = len(sets[set_list[0]]['data'])
+if ll > args.top:
+  ll = args.top
+  for k,v, in sets.items():
+    v['data'] = v['data'][:args.top]
+    v['labels'] = v['labels'][:args.top]
+
 for k,v in sets.items():
   if len(v['data']) != ll or len(v['labels']) != ll:
-    print('Inconsistent length of input data after application of threshold')
+    print('Bad length of input data')
     exit(1)
 
 x = np.arange(ll)  # the label locations
