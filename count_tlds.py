@@ -2,11 +2,12 @@
 
 # Copyright (C) 2020, Andrew McConachie, <andrew@depht.com>
 
-import sys
-import os
 import argparse
+import json
+import os
+import sys
 
-class TLDCount():
+class TLDCount(): # Can't use a simple dict() because we need to sort by count
   def __init__(self, tld, count):
     self.tld = str(tld)
     self.count = int(count)
@@ -17,11 +18,15 @@ class TLDCount():
   def __str__(self):
     return self.__repr__()
 
+  def to_json(self):
+    return '\"' + self.tld + '\": ' + str(self.count)
+
 
 # BEGIN EXECUTION
 ap = argparse.ArgumentParser(description='Count TLDs used from a consolidated file')
-ap.add_argument('-i', '--input-file', dest='infile', type=str, help='Input file')
 ap.add_argument('-c', '--categorize', dest='cat', nargs=1, help='Categorize by supplied CSV file')
+ap.add_argument('-i', '--input-file', dest='infile', type=str, help='Input file')
+ap.add_argument('-j', '--json', dest='json', action='store_true', default=False, help='Output JSON')
 ap.add_argument('-x', '--exclude', dest='exclude', nargs='+', help='If categorizing, exclude these TLDs from categorization')
 args = ap.parse_args()
 
@@ -76,11 +81,20 @@ if args.cat:
     else:
       output[categories[tld]] = count
 
-  for category,count in output.items():
-    print(category + ":" + str(count))
+  if args.json:
+    print(json.dumps(output))
+  else:
+    for category,count in output.items():
+      print(category + ":" + str(count))
 
 else:
   output = [TLDCount(k, v) for k,v in tlds.items()]
   output.sort(key=lambda x: x.count, reverse=True)
-  for tt in output:
-    print(repr(tt))
+  if args.json:
+    ss = '{'
+    for tt in output:
+      ss += tt.to_json() + ','
+    print(ss.rstrip(',') + '}')
+  else:
+    for tt in output:
+      print(repr(tt))
