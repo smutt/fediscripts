@@ -4,6 +4,7 @@
 # With help from https://matplotlib.org/gallery/lines_bars_and_markers/barchart.html#sphx-glr-gallery-lines-bars-and-markers-barchart-py
 
 import argparse
+import collections
 import datetime
 import json
 import matplotlib
@@ -24,6 +25,7 @@ def autolabel(bars):
 ap = argparse.ArgumentParser(description='Take JSON data on stdin and chart it')
 ap.add_argument('-o', '--output-file', default='gen_graph', dest='outfile', type=str, help='Name of output file without file extension')
 ap.add_argument('-t', '--threshold', metavar='THRESHOLD', default=0, type=int, dest='threshold', help='Do not include any value less than THRESHOLD')
+ap.add_argument('--title', default=None, type=str, dest='title', help='Chart title. Otherwise taken from JSON input')
 args = ap.parse_args()
 
 if sys.stdin.isatty():
@@ -37,48 +39,74 @@ except json.JSONDecodeError as e:
   exit(1)
 
 # Determine title
-if len(stdin_data.items()) > 1:
-  print('bad input')
-  exit(1)
-title = list(stdin_data)[0]
+if args.title:
+  title = args.title
+else:
+  title = list(stdin_data)[0]
 
 # Prep data and labels
-data = []
-labels = []
-other = 0
-total = 0
-for key,value in stdin_data[title].items():
-  if key.lower() == 'total':
-    total = value
-    continue
-  if key.lower() == 'other':
-    other += value
-    continue
-  if value < args.threshold:
-    other += value
-  else:
-    labels.append(key)
-    data.append(value)
+# Build a dict of dicts of parallel lists
+sets = collections.OrderedDict()
+set_list = []
+for k,v in stdin_data.items():
+  sets[k] = {}
+  set_list.append(k)
+  sets[k]['data'] = []
+  sets[k]['labels'] = []
+  other = 0
+  total = 0
+  for key,value in v.items():
+    if key.lower() == 'total':
+      total = value
+      continue
+    if key.lower() == 'other':
+      other += value
+      continue
+    if value < args.threshold:
+      other += value
+    else:
+      sets[k]['labels'].append(key)
+      sets[k]['data'].append(value)
 
-labels.append('other')
-data.append(other)
+  sets[k]['labels'].append('other')
+  sets[k]['data'].append(other)
+  print(k + ' labels:' + repr(sets[k]['labels']))
+  print(k + ' data:' + repr(sets[k]['data']))
 
-print('labels:' + repr(labels))
-print('data:' + repr(data))
+if len(set_list) > 2:
+  print('No more than 2 data sets supported')
+  exit(1)
 
-x = np.arange(len(labels))  # the label locations
+# The length of all lists must be the same
+ll = len(sets[set_list[0]]['data'])
+for k,v in sets.items():
+  if len(v['data']) != ll or len(v['labels']) != ll:
+    print('Inconsistent length of input data after application of threshold')
+    exit(1)
+
+x = np.arange(ll)  # the label locations
 width = 0.35  # the width of the bars
 
 fig, ax = plt.subplots()
-bar = ax.bar(x - width/2, data, width, label=title)
+if len(set_list) == 2:
+  bar0 = ax.bar(x - width/2, sets[set_list[0]]['data'], width, label=set_list[0])
+  bar1 = ax.bar(x + width/2, sets[set_list[1]]['data'], width, label=set_list[1])
+else:
+  bar = ax.bar(x - width/2, sets[set_list[0]]['data'], width, label=set_list[0])
 
 # Setup labels
 ax.set_ylabel('Num Instances')
 ax.set_title(title + ' for ' + str(total) + ' instances')
 ax.set_xticks(x)
-ax.set_xticklabels(labels)
+ax.set_xticklabels(sets[set_list[0]]['labels'])
 plt.setp(ax.get_xticklabels(), rotation=30, horizontalalignment='right')
-autolabel(bar)
+
+# Put numbers at the top of each bar
+if len(set_list) == 2:
+  autolabel(bar0)
+  autolabel(bar1)
+else:
+  autolabel(bar)
 
 date = datetime.datetime.now().strftime("%Y_%m_%d")
 fig.tight_layout()
