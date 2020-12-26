@@ -61,6 +61,12 @@ USER_CATS[5000] = '1001-5k'
 USER_CATS[10000] = '5001-10k'
 USER_CATS[sys.maxsize] = '>10k'
 
+SUMS = {} # A mapping of SUMS CLI arguments to nodeinfo attributes
+SUMS['local-posts'] = ['usage', 'localPosts']
+SUMS['users-total'] = ['usage', 'users', 'total']
+SUMS['users-active-month'] = ['usage', 'users', 'activeMonth']
+SUMS['users-active-halfyear'] = ['usage', 'users', 'activeHalfyear']
+
 #####################
 # GENERAL FUNCTIONS #
 #####################
@@ -136,6 +142,41 @@ def perform_test(test, instances):
       instances[ii] = None
 
   return [ins for ins in instances if ins]
+
+# Total an integer from nodeinfo for multiple instances
+# Return integer value
+def perform_total(attr, instances):
+  if len(instances) < MIN_THREADS * 2:
+    results = []
+    for ii in range(len(instances)):
+      results.append(fetch_nodeinfo_attr(instances[ii].domain, attr))
+  else:
+    thread_count = max(MIN_THREADS, min(MAX_THREADS, math.ceil(len(instances) / 2)))
+    verbose("total_thread_count:" + str(thread_count))
+    pool = multiprocessing.pool.ThreadPool(processes=thread_count)
+    results = pool.starmap(fetch_nodeinfo_attr, [(ins.domain, attr) for ins in instances])
+
+  # This should never happen, defensive programming
+  if len(instances) != len(results):
+    print("Unknown fatal totaling error")
+    exit(1)
+
+  total = 0
+  for res in results:
+    if res:
+      if isinstance(res, int):
+        if res > 0:
+          total += res
+      if isinstance(res, str):
+        try:
+          res = int(res)
+        except ValueError as e:
+          debug('perform_total:' + ' ValueError:' + str(e))
+          continue
+        if res > 0:
+          total += res
+
+  return total
 
 # Perform categorization on passed list of instances
 # cat is a function that categorizes instance and returns a String
@@ -580,6 +621,10 @@ ap = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatte
                                description = 'Perform ordered tests on Fediverse instances. Output instances that pass all given tests.',
                                epilog =
 '''
+<Mutually exclusive arguments>
+INSTANCE and --input-file are mutually exclusive
+--output-file, --categorize and --sum are all mutually exclusive
+
 <Test execution order>
 dns-resolve -> dnssec -> ping-ipv4 -> ping-ipv6 -> https -> node-info -> node-info2
 
@@ -590,14 +635,20 @@ software -> Categorize by software name shown in nodeinfo.
 url -> {Experimental} Categorize by guessing implementation type by fetchable common URLs.
 users-total -> Categorize by total users shown in nodeinfo.
 users-active-month -> Categorize by monthly active users shown in nodeinfo.
-users-active-halfyear -> Categorize by half-yearly active users shown in nodeinfo.
+users-active-halfyear -> Categorize by half-yearly(180 days) active users shown in nodeinfo.
+
+<Available sums>
+local-posts -> Sum up local posts shown in nodeinfo.
+users-total ->  Sum up total users shown in nodeinfo.
+users-active-month -> Sum up monthly active users shown in nodeinfo.
+users-active-halfyear -> Sum up half-yearly(180 days) active users shown in nodeinfo.
 '''
                                )
 ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
 ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with DS RR in parent. No validation performed.')
 ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
 ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
-ap.add_argument('-s', '--https', dest='https', action='store_true', default=False, help='Output instances running an HTTPS service, somewhat guesswork.')
+ap.add_argument('-e', '--https', dest='https', action='store_true', default=False, help='Output instances running an encrypted HTTPS service, somewhat guesswork.')
 ap.add_argument('-n', '--node-info', dest='ninfo', action='store_true', default=False, help='Output instances hosting /.well-known/nodeinfo files')
 ap.add_argument('-n2', '--node-info2', dest='ninfo2', action='store_true', default=False, help='Output instances hosting /.well-known/x-nodeinfo2 files')
 
@@ -612,8 +663,10 @@ input_group = ap.add_mutually_exclusive_group()
 input_group.add_argument('instance', metavar='INSTANCE', nargs='?', type=str, help='Test a single instance')
 input_group.add_argument('-i', '--input-file', dest='infile', type=str, help='Consolidated list of hosts input file')
 
-ap.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update. Overrides stdout.')
-ap.add_argument('-c', '--categorize', metavar='METHOD', dest='cat', nargs='+', help='Categorize passing instances by one or more qualifiers. Overrides output-file.')
+output_group = ap.add_mutually_exclusive_group()
+output_group.add_argument('-o', '--output-file', dest='outfile', type=str, help='Consolidated output file to update')
+output_group.add_argument('-c', '--categorize', metavar='METHOD', dest='cat', nargs='+', help='Categorize passing instances by one or more qualifiers')
+output_group.add_argument('-s', '--sum', metavar='SUM', dest='sums', nargs='+', help='Sum up nodeinfo integer values retrieved from passing instances')
 args = ap.parse_args()
 
 if args.totals:
@@ -628,7 +681,7 @@ if not args.all and not args.ping4 and not args.ping6 and not args.dnssec \
   print("No tests requested, exiting")
   exit(1)
 
-if args.cat or args.json or args.totals:
+if args.json or args.totals:
   args.outfile = None
 
 # Build list of instances
@@ -728,3 +781,11 @@ if args.cat:
       else:
         for cat,tot in perform_cat(func, instances).items():
           print(method + ':' + cat + ':' + str(tot))
+
+if args.sums:
+  for method,attr in SUMS.items():
+    if method in args.sums:
+      if args.json:
+        print(json.dumps({method:perform_total(attr, instances)}))
+      else:
+        print(method + ':' + str(perform_total(attr, instances)))
