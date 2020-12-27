@@ -318,17 +318,24 @@ def test_dns(domain):
     return dns_query(domain, 'AAAA')
   return True
 
-# Return True if domain zone contains DS record
-# OTherwise returns False
+# Return True if DS and DNSKEY records present
+# Otherwise returns False
 def test_dnssec(domain):
   try:
-    zone = dns.resolver.zone_for_name(domain).to_text()
-  except dns.resolver.NoRootSOA:
-    return False
-  except:
+    cname = dns.resolver.resolve(domain, search=True).__dict__['canonical_name'].to_text()
+  except  dns.exception.DNSException as e:
+    debug('test_dnssec:cname:' + domain + ' ' + str(e))
     return False
 
-  return dns_query(zone, 'DS')
+  try:
+    zone = dns.resolver.zone_for_name(cname).to_text()
+  except dns.exception.DNSException as e:
+    debug('test_dnssec:zone:' + cname + ' ' + str(e))
+    return False
+
+  if dns_query(zone, 'DS'):
+    return dns_query(zone, 'DNSKEY')
+  return False
 
 # Wrapper functions for test_ping()
 def test_ping4(domain):
@@ -645,7 +652,7 @@ users-active-halfyear -> Sum up half-yearly(180 days) active users shown in node
 '''
                                )
 ap.add_argument('-r', '--dns-resolve', dest='dns', action='store_true', default=False, help='Output instances that resolve in DNS')
-ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with DS RR in parent. No validation performed.')
+ap.add_argument('-d', '--dnssec', dest='dnssec', action='store_true', default=False, help='Output instances with associated DS and DNSKEY RRs. No validation performed.')
 ap.add_argument('-4', '--ping-ipv4', dest='ping4', action='store_true', default=False, help='Output instances answering ipv4 ICMP echo requests')
 ap.add_argument('-6', '--ping-ipv6', dest='ping6', action='store_true', default=False, help='Output instances answering ipv6 ICMP echo requests')
 ap.add_argument('-e', '--https', dest='https', action='store_true', default=False, help='Output instances running an encrypted HTTPS service, somewhat guesswork.')
