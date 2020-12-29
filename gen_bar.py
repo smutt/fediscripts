@@ -23,9 +23,11 @@ def autolabel(bars):
 
 ap = argparse.ArgumentParser(description='Take single JSON dict on stdin and chart it')
 ap.add_argument('-o', '--output-file', default='gen_bar', dest='outfile', type=str, help='Name of output file without file extension')
+ap.add_argument('-s', '--sort', default=False, action='store_true', dest='sort', help='Sort labels in ascending alphanumeric')
 ap.add_argument('-t', '--threshold', metavar='THRESHOLD', default=0, type=int, dest='threshold', help='Do not include any value less than THRESHOLD')
+ap.add_argument('--no-other', default=False, action='store_true', dest='nother', help="Do not chart 'other' values")
 ap.add_argument('--title', default=None, type=str, dest='title', help='Chart title. Otherwise taken from JSON input')
-ap.add_argument('--top', metavar='TOP', default=10, dest='top', type=int, help='Only chart the top TOP values')
+ap.add_argument('--top', metavar='TOP', type=int, dest='top', help='Only chart TOP number of values. Also sorts descending.')
 args = ap.parse_args()
 
 if sys.stdin.isatty():
@@ -38,7 +40,7 @@ except json.JSONDecodeError as e:
   print('gen_bar.py:JSON LoadError:' + str(e))
   exit(1)
 
-print(repr(stdin_data))
+print('json:' + repr(stdin_data))
 
 if len(stdin_data) > 1:
   print('No more than 1 data set supported')
@@ -69,17 +71,45 @@ for key,value in stdin_data[top_key].items():
     labels.append(key)
     data.append(value)
 
-if other:
-  labels.append('other')
-  data.append(other)
-
-print('labels:' + repr(labels))
-print('data:' + repr(data))
-
 # The length of all lists must be the same
 if len(data) != len(labels):
   print('Bad length of input data')
   exit(1)
+
+if args.top and args.top < len(labels):
+  new_labels = []
+  new_data = []
+  for jj in range(args.top):
+    highest = 0
+    for ii in range(len(labels)):
+      if data[ii] > data[highest]:
+        highest = ii
+    new_labels.append(labels.pop(highest))
+    new_data.append(data.pop(highest))
+  for value in data:
+    other += value
+  labels = new_labels
+  data = new_data
+
+if other and not args.nother:
+  labels.append('other')
+  data.append(other)
+
+if args.sort:
+  new_labels = []
+  new_data = []
+  while len(labels):
+    lowest = 0
+    for ii in range(len(labels)):
+      if labels[lowest] > labels[ii]:
+        lowest = ii
+    new_labels.append(labels.pop(lowest))
+    new_data.append(data.pop(lowest))
+  labels = new_labels
+  data = new_data
+
+print('labels:' + repr(labels))
+print('data:' + repr(data))
 
 x = np.arange(len(labels))  # the label locations
 width = 0.35  # the width of the bars
