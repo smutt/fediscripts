@@ -662,7 +662,7 @@ ap.add_argument('-n2', '--node-info2', dest='ninfo2', action='store_true', defau
 ap.add_argument('-a', '--all-tests', dest='all', action='store_true', default=False, help='Test everything')
 ap.add_argument('-g', '--debug', dest='debug', action='store_true', default=False, help='Enable debug mode, LOTS of output')
 ap.add_argument('-j', '--json', dest='json', action='store_true', default=False, help='Output to JSON instead of CSV. Overrides output-file.')
-ap.add_argument('-t', '--totals', dest='totals', action='store_true', default=False, help='Print test passing totals and categorizations. Does not output consolidated instances. Sets verbose and overrides output-file.')
+ap.add_argument('-t', '--totals', dest='totals', action='store_true', default=False, help='Print test passing totals and categorizations. Does not output consolidated instances. Overrides output-file.')
 ap.add_argument('-v', '--verbose', dest='verbose', action='store_true', default=False, help='Verbose output')
 ap.add_argument('-m', '--min-hits', dest='minhits', type=int, default=None, help='Only test instances with hits >= MINHITS. Requires input-file.')
 
@@ -675,9 +675,6 @@ output_group.add_argument('-o', '--output-file', dest='outfile', type=str, help=
 output_group.add_argument('-c', '--categorize', metavar='METHOD', dest='cat', nargs='+', help='Categorize passing instances by one or more qualifiers')
 output_group.add_argument('-s', '--sum', metavar='SUM', dest='sums', nargs='+', help='Sum up nodeinfo integer values retrieved from passing instances')
 args = ap.parse_args()
-
-if args.totals:
-  args.verbose = True
 
 if not args.instance and not args.infile:
   print("No input specified")

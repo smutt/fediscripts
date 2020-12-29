@@ -34,9 +34,9 @@ if sys.stdin.isatty():
   exit(1)
 
 try:
-  stdin_data = json.loads(sys.stdin.read())
+  stdin_data = json.loads(sys.stdin.read().strip())
 except json.JSONDecodeError as e:
-  print('JSON LoadError:' + str(e))
+  print('gen_chart.py:JSON LoadError:' + str(e))
   exit(1)
 
 # Determine title
